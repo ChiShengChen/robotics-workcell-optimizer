@@ -1,18 +1,24 @@
-// 3D top-down + perspective view of the workcell. Mirrors the 2D canvas
-// 1:1 by reading the same LayoutProposal, but renders boxes / cylinders /
-// stacked cases via react-three-fiber. World units are metres (mm * 0.001).
+// 3D top-down + perspective view of the workcell with a live pick-and-place
+// animation. Reads the active LayoutProposal + spec, runs a cycle state
+// machine that walks an EOAT through pick -> transport -> place phases, and
+// renders the robot with 4-axis IK so the arm follows the EOAT.
 
-import { useMemo } from 'react'
-import { Canvas } from '@react-three/fiber'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Canvas, useFrame } from '@react-three/fiber'
 import { Grid, OrbitControls, RoundedBox } from '@react-three/drei'
 import * as THREE from 'three'
+import { Pause, Play, RotateCcw } from 'lucide-react'
 
 import type { LayoutProposal, PlacedComponent, WorkcellSpec } from '@/api/types'
+import { buildStack, type CaseDims, type PalletDims } from '@/lib/stacking'
 import {
-  buildStack,
-  type CaseDims,
-  type PalletDims,
-} from '@/lib/stacking'
+  type ArmGeometry,
+  type CycleConfig,
+  type CycleState,
+  initialCycleState,
+  solveArmIK,
+  step as stepCycle,
+} from '@/lib/cycleAnimation'
 
 interface Props {
   proposal: LayoutProposal | null
@@ -20,18 +26,23 @@ interface Props {
 }
 
 const MM_TO_M = 0.001
-const ROBOT_BASE_HEIGHT = 0.6 // m
+const ROBOT_BASE_HEIGHT = 0.6
 const CONVEYOR_HEIGHT = 0.9
 const FENCE_HEIGHT = 2.0
 const FENCE_THICKNESS = 0.04
 const OPERATOR_PAD_HEIGHT = 0.02
+const PALLET_TOP_Y = 0.022 + 0.078 + 0.022 // matches plank-built pallet structure
 
 export function Workcell3DCanvas({ proposal, spec }: Props) {
   const cellW = (proposal?.cell_bounds_mm[0] ?? spec?.cell_envelope_mm[0] ?? 8000) * MM_TO_M
   const cellH = (proposal?.cell_bounds_mm[1] ?? spec?.cell_envelope_mm[1] ?? 6000) * MM_TO_M
 
+  const [playing, setPlaying] = useState(true)
+  const [speed, setSpeed] = useState(0.6)
+  const [resetTick, setResetTick] = useState(0)
+
   return (
-    <div className="h-full w-full bg-gradient-to-b from-slate-100 to-slate-200">
+    <div className="relative h-full w-full bg-gradient-to-b from-slate-100 to-slate-200">
       <Canvas
         shadows
         camera={{ position: [cellW * 1.1, cellH * 1.1, cellW * 1.1], fov: 40 }}
@@ -45,7 +56,7 @@ export function Workcell3DCanvas({ proposal, spec }: Props) {
           shadow-mapSize={[1024, 1024]}
         />
 
-        {/* Cell floor */}
+        {/* Floor + grid */}
         <mesh
           position={[cellW / 2, -0.001, cellH / 2]}
           rotation={[-Math.PI / 2, 0, 0]}
@@ -54,11 +65,7 @@ export function Workcell3DCanvas({ proposal, spec }: Props) {
           <planeGeometry args={[cellW, cellH]} />
           <meshStandardMaterial color="#f8fafc" />
         </mesh>
-
-        {/* Cell border */}
         <CellBorder w={cellW} h={cellH} />
-
-        {/* World origin grid (CLAUDE.md: x → right, y → forward, z → up) */}
         <Grid
           args={[cellW * 2, cellH * 2]}
           cellSize={1}
@@ -73,8 +80,18 @@ export function Workcell3DCanvas({ proposal, spec }: Props) {
           position={[cellW / 2, 0, cellH / 2]}
         />
 
-        {(proposal?.components ?? []).map((c) =>
-          renderComponent(c, spec ?? undefined),
+        {proposal && spec ? (
+          <AnimatedScene
+            proposal={proposal}
+            spec={spec}
+            playing={playing}
+            speed={speed}
+            resetTick={resetTick}
+          />
+        ) : (
+          (proposal?.components ?? []).map((c) =>
+            renderStaticComponent(c, spec ?? undefined),
+          )
         )}
 
         <OrbitControls
@@ -84,6 +101,40 @@ export function Workcell3DCanvas({ proposal, spec }: Props) {
           maxPolarAngle={Math.PI / 2 - 0.05}
         />
       </Canvas>
+
+      <div className="pointer-events-auto absolute left-3 top-3 flex items-center gap-2 rounded bg-white/90 px-2 py-1 text-[11px] text-slate-700 shadow">
+        <button
+          type="button"
+          onClick={() => setPlaying((v) => !v)}
+          className="flex h-5 w-5 items-center justify-center rounded hover:bg-slate-100"
+          title={playing ? 'Pause' : 'Play'}
+        >
+          {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+        </button>
+        <button
+          type="button"
+          onClick={() => setResetTick((t) => t + 1)}
+          className="flex h-5 w-5 items-center justify-center rounded hover:bg-slate-100"
+          title="Reset cycle"
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+        </button>
+        <span className="text-slate-400">|</span>
+        <label className="flex items-center gap-1 text-[10px] text-slate-500">
+          speed
+          <input
+            type="range"
+            min={0.2}
+            max={3}
+            step={0.1}
+            value={speed}
+            onChange={(e) => setSpeed(parseFloat(e.target.value))}
+            className="w-20 accent-blue-600"
+          />
+          <span className="w-8 tabular-nums text-slate-700">{speed.toFixed(1)}x</span>
+        </label>
+      </div>
+
       <div className="pointer-events-none absolute bottom-2 right-3 rounded bg-white/80 px-2 py-1 text-[11px] text-slate-600 shadow-sm">
         {cellW.toFixed(1)} × {cellH.toFixed(1)} m · drag to orbit · scroll to zoom
       </div>
@@ -91,138 +142,323 @@ export function Workcell3DCanvas({ proposal, spec }: Props) {
   )
 }
 
-function CellBorder({ w, h }: { w: number; h: number }) {
-  const geom = useMemo(() => {
-    const points = [
-      new THREE.Vector3(0, 0.001, 0),
-      new THREE.Vector3(w, 0.001, 0),
-      new THREE.Vector3(w, 0.001, h),
-      new THREE.Vector3(0, 0.001, h),
-      new THREE.Vector3(0, 0.001, 0),
-    ]
-    return new THREE.BufferGeometry().setFromPoints(points)
-  }, [w, h])
-  return (
-    <primitive
-      object={
-        new THREE.Line(
-          geom,
-          new THREE.LineBasicMaterial({ color: '#94a3b8' }),
-        )
+// ---------------------------------------------------------------------------
+// Animated scene: holds the cycle state, runs useFrame, places components.
+// ---------------------------------------------------------------------------
+
+function AnimatedScene({
+  proposal,
+  spec,
+  playing,
+  speed,
+  resetTick,
+}: {
+  proposal: LayoutProposal
+  spec: WorkcellSpec
+  playing: boolean
+  speed: number
+  resetTick: number
+}) {
+  const cycleCfg = useMemo<CycleConfig | null>(() => buildCycleConfig(proposal, spec), [proposal, spec])
+
+  const [version, setVersion] = useState(0) // bumps when placedPerPallet changes
+  const stateRef = useRef<CycleState | null>(null)
+  const eoatRef = useRef(new THREE.Vector3())
+  const carryingRef = useRef(false)
+  const armPoseRef = useRef<{ j1: number; elbow: THREE.Vector3; wrist: THREE.Vector3; hip: THREE.Vector3 } | null>(null)
+
+  // Reset when proposal or spec changes, or when user hits the reset button.
+  useEffect(() => {
+    if (!cycleCfg) {
+      stateRef.current = null
+      return
+    }
+    stateRef.current = initialCycleState(cycleCfg)
+    eoatRef.current.copy(cycleCfg.homePoint)
+    carryingRef.current = false
+    setVersion((v) => v + 1)
+  }, [cycleCfg, resetTick])
+
+  // Robot geometry (mirrors the visual model in Robot3D).
+  const robotComp = proposal.components.find((c) => c.type === 'robot')
+  const baseR = ((robotComp?.dims.base_radius_mm as number | undefined) ?? 350) * MM_TO_M
+  const reach = ((robotComp?.dims.reach_mm as number | undefined) ?? 2400) * MM_TO_M
+  const armGeom: ArmGeometry | null = robotComp
+    ? {
+        baseWorld: new THREE.Vector3(robotComp.x_mm * MM_TO_M, 0, robotComp.y_mm * MM_TO_M),
+        hipHeight: ROBOT_BASE_HEIGHT + baseR * 0.35,
+        l1: reach * 0.55,
+        l2: reach * 0.55,
       }
-    />
+    : null
+
+  // Conveyor belt cases drift toward the robot. Each case is at a u in [0, 1]
+  // along the belt's flow direction (1 = pick end). We seed a constant pool.
+  const conveyorComp = proposal.components.find((c) => c.type === 'conveyor')
+  const beltCasesRef = useRef<{ u: number }[]>([])
+  useEffect(() => {
+    beltCasesRef.current = Array.from({ length: 4 }).map((_, i) => ({ u: i * 0.22 }))
+  }, [conveyorComp?.id])
+
+  useFrame((_, dt) => {
+    if (!stateRef.current || !cycleCfg) return
+    const dtSim = playing ? dt * speed : 0
+    const out = stepCycle(stateRef.current, cycleCfg, dtSim)
+    const prev = stateRef.current
+    stateRef.current = out.state
+    eoatRef.current.copy(out.eoatPosition)
+    carryingRef.current = out.carrying
+    if (armGeom) {
+      const pose = solveArmIK(armGeom, eoatRef.current)
+      armPoseRef.current = {
+        j1: pose.j1,
+        elbow: pose.elbowWorld,
+        wrist: pose.wristWorld,
+        hip: pose.hipWorld,
+      }
+    }
+    // Belt cases drift forward and recycle.
+    if (dtSim > 0) {
+      const beltSpeed = 0.18
+      for (const bc of beltCasesRef.current) {
+        bc.u += beltSpeed * dtSim
+        if (bc.u > 1.05) bc.u -= 1.2
+      }
+    }
+    // Trigger React re-render only when placedPerPallet changes.
+    if (prev && stateRef.current.placedPerPallet !== prev.placedPerPallet) {
+      setVersion((v) => v + 1)
+    }
+  })
+
+  return (
+    <group>
+      {/* Static fence + operator zone (no animation needed) */}
+      {proposal.components
+        .filter((c) => c.type === 'fence' || c.type === 'operator_zone')
+        .map((c) => renderStaticComponent(c))}
+
+      {/* Robot — wrap in the live pose ref */}
+      {robotComp && armGeom && (
+        <RobotArm armGeom={armGeom} poseRef={armPoseRef} carryingRef={carryingRef} eoatRef={eoatRef}
+          baseR={baseR} reach={reach} />
+      )}
+
+      {/* Conveyor with moving cases */}
+      {conveyorComp && (
+        <ConveyorAnimated
+          c={conveyorComp}
+          spec={spec}
+          beltCasesRef={beltCasesRef}
+          carryingRef={carryingRef}
+        />
+      )}
+
+      {/* Pallets with placed cases (re-renders when version changes) */}
+      <PalletsWithPlaced
+        key={version}
+        proposal={proposal}
+        spec={spec}
+        placedPerPallet={stateRef.current?.placedPerPallet ?? {}}
+      />
+    </group>
   )
 }
 
-function renderComponent(c: PlacedComponent, spec?: WorkcellSpec) {
-  if (c.type === 'robot') return <Robot3D key={c.id} c={c} />
-  if (c.type === 'conveyor') return <Conveyor3D key={c.id} c={c} />
-  if (c.type === 'pallet') return <Pallet3D key={c.id} c={c} spec={spec} />
-  if (c.type === 'fence') return <Fence3D key={c.id} c={c} />
-  if (c.type === 'operator_zone') return <OperatorZone3D key={c.id} c={c} />
-  return null
+function buildCycleConfig(proposal: LayoutProposal, spec: WorkcellSpec): CycleConfig | null {
+  const robot = proposal.components.find((c) => c.type === 'robot')
+  if (!robot) return null
+  const conveyor = proposal.components.find((c) => c.type === 'conveyor')
+  const pallets = proposal.components.filter((c) => c.type === 'pallet')
+  if (!conveyor || pallets.length === 0) return null
+
+  // Pick point = far end of conveyor (closest to robot, where the belt brings cases).
+  const length = (conveyor.dims.length_mm as number | undefined) ?? 2000
+  const width = (conveyor.dims.width_mm as number | undefined) ?? 600
+  const isVertical = Math.abs(((conveyor.yaw_deg % 180) + 180) % 180 - 90) < 1e-3
+  const pickWorld = isVertical
+    ? new THREE.Vector3(
+        (conveyor.x_mm + width / 2) * MM_TO_M,
+        CONVEYOR_HEIGHT + 0.05,
+        (conveyor.y_mm + length) * MM_TO_M,
+      )
+    : new THREE.Vector3(
+        (conveyor.x_mm + length) * MM_TO_M,
+        CONVEYOR_HEIGHT + 0.05,
+        (conveyor.y_mm + width / 2) * MM_TO_M,
+      )
+
+  const caseH = (spec.case_dims_mm?.[2] ?? 220) * MM_TO_M
+
+  const placePoints = pallets.map((p) => {
+    const pl = (p.dims.length_mm as number | undefined) ?? 1200
+    const pw = (p.dims.width_mm as number | undefined) ?? 800
+    const cx = (p.x_mm + pl / 2) * MM_TO_M
+    const cz = (p.y_mm + pw / 2) * MM_TO_M
+    // Place height = pallet top + half a case (centre), but we lift by stack count in step()
+    return { palletId: p.id, basePoint: new THREE.Vector3(cx, PALLET_TOP_Y + caseH / 2, cz) }
+  })
+
+  const homePoint = new THREE.Vector3(
+    robot.x_mm * MM_TO_M,
+    ROBOT_BASE_HEIGHT + 1.6,
+    robot.y_mm * MM_TO_M,
+  )
+
+  // Use the proposal's estimated cycle time directly (typically 1.5–4 s).
+  const cycleSeconds = Math.max(1.0, proposal.estimated_cycle_time_s)
+
+  return {
+    cycleSeconds,
+    pickPoint: pickWorld,
+    placePointsByPallet: placePoints,
+    homePoint,
+    hoverHeight: 0.6,
+    caseHeight: caseH,
+  }
 }
 
-function Robot3D({ c }: { c: PlacedComponent }) {
-  const baseR = ((c.dims.base_radius_mm as number | undefined) ?? 350) * MM_TO_M
-  const reach = ((c.dims.reach_mm as number | undefined) ?? 2400) * MM_TO_M
-  const eff = ((c.dims.effective_reach_mm as number | undefined) ?? reach * 0.85) * 1
-  const x = c.x_mm * MM_TO_M
-  const z = c.y_mm * MM_TO_M
+// ---------------------------------------------------------------------------
+// Robot arm — drawn from live pose ref each frame.
+// ---------------------------------------------------------------------------
 
-  // 4-axis palletizer kinematics (stylised static pose):
-  //   J1 base rotation (vertical axis) — implicit in the cylindrical base.
-  //   J2 lower arm pitching up at θ2 from a hip joint.
-  //   J3 upper arm pitching at θ3, kept horizontal by the parallelogram link.
-  //   J4 wrist rotation keeps the EOAT vertical (palletizer convention).
-  // We pose the arm extended at ~70% reach toward +x so reviewers see it
-  // hovering over the pallet instead of stowed straight up.
-  const HIP_HEIGHT = ROBOT_BASE_HEIGHT + baseR * 0.35
-  const LOWER_LEN = reach * 0.55
-  const UPPER_LEN = reach * 0.55
-  const THETA2 = (60 * Math.PI) / 180   // lower arm pitch up from horizontal
-  const THETA3 = (-25 * Math.PI) / 180  // upper arm pitch down from horizontal
-  // Forward/up endpoint of lower arm.
-  const elbowX = LOWER_LEN * Math.cos(THETA2)
-  const elbowY = HIP_HEIGHT + LOWER_LEN * Math.sin(THETA2)
-  // Endpoint of upper arm (= wrist position).
-  const wristX = elbowX + UPPER_LEN * Math.cos(THETA3)
-  const wristY = elbowY + UPPER_LEN * Math.sin(THETA3)
+function RobotArm({
+  armGeom,
+  poseRef,
+  carryingRef,
+  eoatRef,
+  baseR,
+  reach,
+}: {
+  armGeom: ArmGeometry
+  poseRef: React.MutableRefObject<{ j1: number; elbow: THREE.Vector3; wrist: THREE.Vector3; hip: THREE.Vector3 } | null>
+  carryingRef: React.MutableRefObject<boolean>
+  eoatRef: React.MutableRefObject<THREE.Vector3>
+  baseR: number
+  reach: number
+}) {
+  const lowerRef = useRef<THREE.Mesh>(null)
+  const upperRef = useRef<THREE.Mesh>(null)
+  const link1Ref = useRef<THREE.Mesh>(null)
+  const link2Ref = useRef<THREE.Mesh>(null)
+  const elbowRef = useRef<THREE.Mesh>(null)
+  const wristRef = useRef<THREE.Mesh>(null)
+  const eoatPlateRef = useRef<THREE.Mesh>(null)
+  const eoatGroupRef = useRef<THREE.Group>(null)
+  const carriedCaseRef = useRef<THREE.Mesh>(null)
+  const baseYawRef = useRef<THREE.Group>(null)
+
   const armR = baseR * 0.18
+  const eff = reach * 0.85
+  const linkOffsetY = baseR * 0.45
+
+  useFrame(() => {
+    const p = poseRef.current
+    if (!p) return
+    // Position elbow / wrist housings.
+    elbowRef.current?.position.copy(p.elbow)
+    wristRef.current?.position.copy(p.wrist).setY(p.wrist.y - 0.08)
+    eoatGroupRef.current?.position.copy(p.wrist).setY(p.wrist.y - 0.22)
+
+    // Lower arm: from hip to elbow.
+    placeBetween(lowerRef.current, p.hip, p.elbow)
+    // Upper arm: from elbow to wrist.
+    placeBetween(upperRef.current, p.elbow, p.wrist)
+    // Parallelogram links: offset above by linkOffsetY.
+    const hipUp = p.hip.clone().setY(p.hip.y + linkOffsetY)
+    const elbowUp = p.elbow.clone().setY(p.elbow.y + linkOffsetY)
+    const wristUp = p.wrist.clone().setY(p.wrist.y + 0.05)
+    placeBetween(link1Ref.current, hipUp, elbowUp)
+    placeBetween(link2Ref.current, elbowUp, wristUp)
+
+    // Base yaw rotation so the housing faces J1.
+    if (baseYawRef.current) baseYawRef.current.rotation.y = -p.j1
+
+    // Carried case visibility.
+    if (carriedCaseRef.current) {
+      carriedCaseRef.current.visible = carryingRef.current
+    }
+
+    // EOAT plate orientation (always vertical thanks to parallelogram).
+    if (eoatPlateRef.current) {
+      eoatPlateRef.current.rotation.set(0, -p.j1, 0)
+    }
+    void eoatRef
+  })
 
   return (
-    <group position={[x, 0, z]}>
-      {/* Base column */}
-      <mesh position={[0, ROBOT_BASE_HEIGHT / 2, 0]} castShadow receiveShadow>
+    <group>
+      {/* Base column + yaw housing */}
+      <mesh position={[armGeom.baseWorld.x, ROBOT_BASE_HEIGHT / 2, armGeom.baseWorld.z]} castShadow receiveShadow>
         <cylinderGeometry args={[baseR, baseR * 1.05, ROBOT_BASE_HEIGHT, 32]} />
         <meshStandardMaterial color="#1f2937" metalness={0.45} roughness={0.4} />
       </mesh>
-      {/* Hip joint housing */}
-      <mesh position={[0, HIP_HEIGHT, 0]} rotation={[Math.PI / 2, 0, 0]} castShadow>
-        <cylinderGeometry args={[baseR * 0.45, baseR * 0.45, baseR * 0.7, 24]} />
-        <meshStandardMaterial color="#fbbf24" metalness={0.5} roughness={0.35} />
+      <group ref={baseYawRef} position={[armGeom.baseWorld.x, ROBOT_BASE_HEIGHT, armGeom.baseWorld.z]}>
+        <mesh position={[0, baseR * 0.35, 0]} rotation={[Math.PI / 2, 0, 0]} castShadow>
+          <cylinderGeometry args={[baseR * 0.45, baseR * 0.45, baseR * 0.7, 24]} />
+          <meshStandardMaterial color="#fbbf24" metalness={0.5} roughness={0.35} />
+        </mesh>
+      </group>
+
+      {/* Lower arm */}
+      <mesh ref={lowerRef} castShadow>
+        <cylinderGeometry args={[armR, armR, 1, 16]} />
+        <meshStandardMaterial color="#f97316" metalness={0.45} roughness={0.4} />
       </mesh>
-      {/* Lower arm (J2) */}
-      <Cylinder
-        from={[0, HIP_HEIGHT, 0]}
-        to={[elbowX, elbowY, 0]}
-        radius={armR}
-        color="#f97316"
-      />
-      {/* Elbow housing */}
-      <mesh position={[elbowX, elbowY, 0]} rotation={[Math.PI / 2, 0, 0]} castShadow>
+      {/* Elbow */}
+      <mesh ref={elbowRef} rotation={[Math.PI / 2, 0, 0]} castShadow>
         <cylinderGeometry args={[armR * 1.4, armR * 1.4, armR * 1.6, 20]} />
         <meshStandardMaterial color="#fbbf24" metalness={0.5} roughness={0.35} />
       </mesh>
-      {/* Upper arm (J3) */}
-      <Cylinder
-        from={[elbowX, elbowY, 0]}
-        to={[wristX, wristY, 0]}
-        radius={armR}
-        color="#f97316"
-      />
-      {/* Parallelogram link — slim secondary arm offset above for that
-          characteristic palletizer silhouette. */}
-      <Cylinder
-        from={[0, HIP_HEIGHT + baseR * 0.45, 0]}
-        to={[elbowX, elbowY + baseR * 0.45, 0]}
-        radius={armR * 0.6}
-        color="#9ca3af"
-      />
-      <Cylinder
-        from={[elbowX, elbowY + baseR * 0.45, 0]}
-        to={[wristX, wristY + baseR * 0.05, 0]}
-        radius={armR * 0.6}
-        color="#9ca3af"
-      />
-      {/* J4 wrist (vertical) + EOAT */}
-      <mesh position={[wristX, wristY - 0.08, 0]} castShadow>
+      {/* Upper arm */}
+      <mesh ref={upperRef} castShadow>
+        <cylinderGeometry args={[armR, armR, 1, 16]} />
+        <meshStandardMaterial color="#f97316" metalness={0.45} roughness={0.4} />
+      </mesh>
+      {/* Parallelogram links */}
+      <mesh ref={link1Ref} castShadow>
+        <cylinderGeometry args={[armR * 0.6, armR * 0.6, 1, 12]} />
+        <meshStandardMaterial color="#9ca3af" metalness={0.45} roughness={0.4} />
+      </mesh>
+      <mesh ref={link2Ref} castShadow>
+        <cylinderGeometry args={[armR * 0.6, armR * 0.6, 1, 12]} />
+        <meshStandardMaterial color="#9ca3af" metalness={0.45} roughness={0.4} />
+      </mesh>
+      {/* Wrist */}
+      <mesh ref={wristRef} castShadow>
         <cylinderGeometry args={[armR * 1.2, armR * 1.2, 0.16, 16]} />
         <meshStandardMaterial color="#1f2937" metalness={0.5} roughness={0.4} />
       </mesh>
-      {/* EOAT (vacuum-style end effector plate) */}
-      <mesh position={[wristX, wristY - 0.22, 0]} castShadow>
-        <boxGeometry args={[0.32, 0.04, 0.32]} />
-        <meshStandardMaterial color="#0f172a" metalness={0.4} roughness={0.5} />
-      </mesh>
-      {[
-        [-0.1, -0.245, -0.1],
-        [0.1, -0.245, -0.1],
-        [-0.1, -0.245, 0.1],
-        [0.1, -0.245, 0.1],
-      ].map(([dx, dy, dz], i) => (
-        <mesh key={i} position={[wristX + dx, wristY + dy, dz]} castShadow>
-          <cylinderGeometry args={[0.04, 0.05, 0.05, 12]} />
-          <meshStandardMaterial color="#475569" metalness={0.3} roughness={0.6} />
+      {/* EOAT */}
+      <group ref={eoatGroupRef}>
+        <mesh ref={eoatPlateRef} castShadow>
+          <boxGeometry args={[0.32, 0.04, 0.32]} />
+          <meshStandardMaterial color="#0f172a" metalness={0.4} roughness={0.5} />
         </mesh>
-      ))}
-      {/* Effective-reach floor ring */}
-      <mesh position={[0, 0.005, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        {[
+          [-0.1, -0.025, -0.1],
+          [0.1, -0.025, -0.1],
+          [-0.1, -0.025, 0.1],
+          [0.1, -0.025, 0.1],
+        ].map(([dx, dy, dz], i) => (
+          <mesh key={i} position={[dx, dy, dz]} castShadow>
+            <cylinderGeometry args={[0.04, 0.05, 0.05, 12]} />
+            <meshStandardMaterial color="#475569" metalness={0.3} roughness={0.6} />
+          </mesh>
+        ))}
+        {/* Carried case (toggled by carryingRef) */}
+        <mesh ref={carriedCaseRef} position={[0, -0.13, 0]} castShadow>
+          <boxGeometry args={[0.4, 0.22, 0.3]} />
+          <meshStandardMaterial color="#fbbf24" roughness={0.7} />
+        </mesh>
+      </group>
+
+      {/* Floor reach rings */}
+      <mesh position={[armGeom.baseWorld.x, 0.005, armGeom.baseWorld.z]} rotation={[-Math.PI / 2, 0, 0]}>
         <ringGeometry args={[eff - 0.02, eff + 0.02, 64]} />
         <meshBasicMaterial color="#0d9488" transparent opacity={0.65} />
       </mesh>
-      {/* Max-reach floor ring (lighter) */}
-      <mesh position={[0, 0.004, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+      <mesh position={[armGeom.baseWorld.x, 0.004, armGeom.baseWorld.z]} rotation={[-Math.PI / 2, 0, 0]}>
         <ringGeometry args={[reach - 0.01, reach + 0.01, 64]} />
         <meshBasicMaterial color="#94a3b8" transparent opacity={0.45} />
       </mesh>
@@ -230,41 +466,35 @@ function Robot3D({ c }: { c: PlacedComponent }) {
   )
 }
 
-/** Cylinder rendered between two world-space points. */
-function Cylinder({
-  from,
-  to,
-  radius,
-  color,
-}: {
-  from: [number, number, number]
-  to: [number, number, number]
-  radius: number
-  color: string
-}) {
-  const dx = to[0] - from[0]
-  const dy = to[1] - from[1]
-  const dz = to[2] - from[2]
-  const length = Math.hypot(dx, dy, dz) || 1e-6
-  const midpoint: [number, number, number] = [
-    (from[0] + to[0]) / 2,
-    (from[1] + to[1]) / 2,
-    (from[2] + to[2]) / 2,
-  ]
-  // Default cylinderGeometry is aligned to +Y; rotate to match (dx, dy, dz).
-  const axis = new THREE.Vector3(dx, dy, dz).normalize()
+/** Position + scale a unit-tall cylinder mesh between two world points. */
+function placeBetween(mesh: THREE.Mesh | null, from: THREE.Vector3, to: THREE.Vector3) {
+  if (!mesh) return
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const dz = to.z - from.z
+  const len = Math.hypot(dx, dy, dz) || 1e-6
+  mesh.position.set((from.x + to.x) / 2, (from.y + to.y) / 2, (from.z + to.z) / 2)
+  mesh.scale.set(1, len, 1)
   const yAxis = new THREE.Vector3(0, 1, 0)
-  const quat = new THREE.Quaternion().setFromUnitVectors(yAxis, axis)
-  const euler = new THREE.Euler().setFromQuaternion(quat)
-  return (
-    <mesh position={midpoint} rotation={[euler.x, euler.y, euler.z]} castShadow receiveShadow>
-      <cylinderGeometry args={[radius, radius, length, 16]} />
-      <meshStandardMaterial color={color} metalness={0.45} roughness={0.4} />
-    </mesh>
-  )
+  const axis = new THREE.Vector3(dx, dy, dz).normalize()
+  mesh.quaternion.setFromUnitVectors(yAxis, axis)
 }
 
-function Conveyor3D({ c }: { c: PlacedComponent }) {
+// ---------------------------------------------------------------------------
+// Conveyor with moving belt cases
+// ---------------------------------------------------------------------------
+
+function ConveyorAnimated({
+  c,
+  spec,
+  beltCasesRef,
+  carryingRef,
+}: {
+  c: PlacedComponent
+  spec: WorkcellSpec
+  beltCasesRef: React.MutableRefObject<{ u: number }[]>
+  carryingRef: React.MutableRefObject<boolean>
+}) {
   const length = ((c.dims.length_mm as number | undefined) ?? 2000) * MM_TO_M
   const width = ((c.dims.width_mm as number | undefined) ?? 600) * MM_TO_M
   const isVertical = Math.abs(((c.yaw_deg % 180) + 180) % 180 - 90) < 1e-3
@@ -273,8 +503,6 @@ function Conveyor3D({ c }: { c: PlacedComponent }) {
   const x = c.x_mm * MM_TO_M + w / 2
   const z = c.y_mm * MM_TO_M + h / 2
 
-  // Roller layout: rollers run perpendicular to flow, evenly spaced along
-  // the long axis (every ~120 mm). When yaw=90 the long axis is z, otherwise x.
   const longAxisLen = isVertical ? h : w
   const shortAxisLen = isVertical ? w : h
   const rollerSpacing = 0.12
@@ -283,9 +511,53 @@ function Conveyor3D({ c }: { c: PlacedComponent }) {
   const rollerLen = shortAxisLen * 0.92
   const longStart = -longAxisLen / 2 + rollerSpacing / 2
 
+  const rollerRefs = useRef<(THREE.Mesh | null)[]>([])
+
+  // Belt case mesh refs.
+  const beltCaseRefs = useRef<(THREE.Mesh | null)[]>([])
+  const caseDims: CaseDims = spec.case_dims_mm
+    ? {
+        length_mm: spec.case_dims_mm[0],
+        width_mm: spec.case_dims_mm[1],
+        height_mm: spec.case_dims_mm[2],
+      }
+    : { length_mm: 400, width_mm: 300, height_mm: 220 }
+  const cw = caseDims.length_mm * MM_TO_M
+  const cd = caseDims.width_mm * MM_TO_M
+  const ch = caseDims.height_mm * MM_TO_M
+
+  useFrame((_, dt) => {
+    // Roller spin.
+    for (const r of rollerRefs.current) {
+      if (!r) continue
+      r.rotation.y += dt * 4
+    }
+    // Belt case positions: u = 0 at far end, u = 1 at robot end.
+    const cases = beltCasesRef.current
+    for (let i = 0; i < cases.length; i += 1) {
+      const m = beltCaseRefs.current[i]
+      if (!m) continue
+      const u = cases[i].u
+      // Visible window: 0 .. 1
+      m.visible = u >= 0 && u <= 1
+      // Hide the FRONT-most case while robot is carrying so the EOAT case
+      // doesn't visually duplicate.
+      if (carryingRef.current && u > 0.9) m.visible = false
+
+      // Position along long axis (from far end -> pick end).
+      const along = -longAxisLen / 2 + u * longAxisLen
+      if (isVertical) {
+        m.position.set(0, CONVEYOR_HEIGHT + ch / 2, along)
+      } else {
+        // For horizontal yaw=0 conveyor, flow is along +x toward robot which sits to the right.
+        m.position.set(along, CONVEYOR_HEIGHT + ch / 2, 0)
+      }
+    }
+  })
+
   return (
     <group position={[x, 0, z]}>
-      {/* Side rails (left + right relative to flow direction) */}
+      {/* Side rails */}
       {[-1, 1].map((side) => (
         <mesh
           key={side}
@@ -303,12 +575,12 @@ function Conveyor3D({ c }: { c: PlacedComponent }) {
           <meshStandardMaterial color="#1e3a8a" metalness={0.5} roughness={0.4} />
         </mesh>
       ))}
-      {/* Lower frame box */}
+      {/* Lower frame */}
       <mesh position={[0, CONVEYOR_HEIGHT * 0.4, 0]} castShadow receiveShadow>
         <boxGeometry args={[w * 0.85, CONVEYOR_HEIGHT * 0.7, h * 0.85]} />
         <meshStandardMaterial color="#1e40af" metalness={0.35} roughness={0.55} />
       </mesh>
-      {/* Support legs at each corner */}
+      {/* Legs */}
       {[
         [-w / 2 + 0.06, -h / 2 + 0.06],
         [w / 2 - 0.06, -h / 2 + 0.06],
@@ -331,6 +603,7 @@ function Conveyor3D({ c }: { c: PlacedComponent }) {
         return (
           <mesh
             key={i}
+            ref={(el) => { rollerRefs.current[i] = el }}
             position={
               isVertical
                 ? [0, CONVEYOR_HEIGHT - 0.005, tAlong]
@@ -348,7 +621,18 @@ function Conveyor3D({ c }: { c: PlacedComponent }) {
           </mesh>
         )
       })}
-      {/* Flow arrow above rollers — pointing toward the robot side */}
+      {/* Belt cases (animated forward) */}
+      {beltCasesRef.current.map((_, i) => (
+        <mesh
+          key={i}
+          ref={(el) => { beltCaseRefs.current[i] = el }}
+          castShadow
+        >
+          <boxGeometry args={[isVertical ? cw : cd, ch, isVertical ? cd : cw]} />
+          <meshStandardMaterial color="#fbbf24" roughness={0.75} />
+        </mesh>
+      ))}
+      {/* Flow arrow */}
       <mesh
         position={isVertical ? [0, CONVEYOR_HEIGHT + 0.04, h * 0.25] : [-w * 0.25, CONVEYOR_HEIGHT + 0.04, 0]}
         rotation={[-Math.PI / 2, 0, isVertical ? 0 : -Math.PI / 2]}
@@ -360,21 +644,56 @@ function Conveyor3D({ c }: { c: PlacedComponent }) {
   )
 }
 
-function Pallet3D({ c, spec }: { c: PlacedComponent; spec?: WorkcellSpec }) {
+// ---------------------------------------------------------------------------
+// Pallets — show plank structure + dynamically-placed cases
+// ---------------------------------------------------------------------------
+
+function PalletsWithPlaced({
+  proposal,
+  spec,
+  placedPerPallet,
+}: {
+  proposal: LayoutProposal
+  spec: WorkcellSpec
+  placedPerPallet: Record<string, number>
+}) {
+  const pallets = proposal.components.filter((c) => c.type === 'pallet')
+  return (
+    <>
+      {pallets.map((p) => (
+        <Pallet3D
+          key={p.id}
+          c={p}
+          spec={spec}
+          placedCount={placedPerPallet[p.id] ?? 0}
+        />
+      ))}
+    </>
+  )
+}
+
+function Pallet3D({
+  c,
+  spec,
+  placedCount,
+}: {
+  c: PlacedComponent
+  spec?: WorkcellSpec
+  placedCount: number
+}) {
   const length = ((c.dims.length_mm as number | undefined) ?? 1200) * MM_TO_M
   const width = ((c.dims.width_mm as number | undefined) ?? 800) * MM_TO_M
   const x = c.x_mm * MM_TO_M + length / 2
   const z = c.y_mm * MM_TO_M + width / 2
 
   const cases = useMemo(() => buildPalletCases(c, spec), [c, spec])
+  const visibleCases = cases.slice(0, placedCount)
 
-  // Real EUR pallet construction: 7 top planks + 3 bottom planks + 9 corner blocks.
-  // 5 top planks running along `length` axis, equally spaced across `width`.
   const topPlankH = 0.022
-  const blockH = 0.078       // corner blocks (between top + bottom decks)
+  const blockH = 0.078
   const bottomPlankH = 0.022
   const N_TOP = 5
-  const plankW = width / (N_TOP + (N_TOP - 1) * 0.25) // small gap between planks
+  const plankW = width / (N_TOP + (N_TOP - 1) * 0.25)
   const gap = plankW * 0.25
   const topY = blockH + bottomPlankH + topPlankH / 2
   const blockY = bottomPlankH + blockH / 2
@@ -385,34 +704,21 @@ function Pallet3D({ c, spec }: { c: PlacedComponent; spec?: WorkcellSpec }) {
 
   return (
     <group position={[x, 0, z]}>
-      {/* Top deck: 5 planks running along x */}
       {Array.from({ length: N_TOP }).map((_, i) => {
         const offsetZ = -width / 2 + plankW / 2 + i * (plankW + gap)
         return (
-          <mesh
-            key={`top-${i}`}
-            position={[0, topY, offsetZ]}
-            castShadow
-            receiveShadow
-          >
+          <mesh key={`top-${i}`} position={[0, topY, offsetZ]} castShadow receiveShadow>
             <boxGeometry args={[length, topPlankH, plankW]} />
             <meshStandardMaterial color="#b45309" roughness={0.85} />
           </mesh>
         )
       })}
-      {/* Bottom deck: 3 planks running along x */}
       {[-width / 2 + plankW / 2, 0, width / 2 - plankW / 2].map((zOff, i) => (
-        <mesh
-          key={`bot-${i}`}
-          position={[0, bottomY, zOff]}
-          castShadow
-          receiveShadow
-        >
+        <mesh key={`bot-${i}`} position={[0, bottomY, zOff]} castShadow receiveShadow>
           <boxGeometry args={[length, bottomPlankH, plankW]} />
           <meshStandardMaterial color="#92400e" roughness={0.9} />
         </mesh>
       ))}
-      {/* 9 corner blocks (3x3 grid) — RoundedBox so the wood looks worn at edges */}
       {blockOffsetsX.map((bx, i) =>
         blockOffsetsZ.map((bz, j) => (
           <RoundedBox
@@ -428,8 +734,7 @@ function Pallet3D({ c, spec }: { c: PlacedComponent; spec?: WorkcellSpec }) {
           </RoundedBox>
         )),
       )}
-      {/* Stacked cases — RoundedBox + slightly varied colour per layer for depth */}
-      {cases.map((b, i) => (
+      {visibleCases.map((b, i) => (
         <RoundedBox
           key={i}
           position={[
@@ -443,11 +748,7 @@ function Pallet3D({ c, spec }: { c: PlacedComponent; spec?: WorkcellSpec }) {
           castShadow
           receiveShadow
         >
-          <meshStandardMaterial
-            color={b.color}
-            roughness={0.85}
-            metalness={0.0}
-          />
+          <meshStandardMaterial color={b.color} roughness={0.85} />
         </RoundedBox>
       ))}
     </group>
@@ -488,7 +789,6 @@ function buildPalletCases(c: PlacedComponent, spec?: WorkcellSpec): Case3D[] {
   const pattern = (c.dims.pattern as 'column' | 'interlock' | 'pinwheel' | undefined) ?? 'interlock'
   const stack = buildStack(palletDims, cas, pattern, nLayers)
 
-  // Rotate alternating layers' colour so we can see interlock pattern from afar.
   const palette = ['#fde68a', '#fbbf24', '#f59e0b', '#ea580c']
   const cases: Case3D[] = []
   stack.perLayer.forEach((layer, layerIdx) => {
@@ -505,6 +805,35 @@ function buildPalletCases(c: PlacedComponent, spec?: WorkcellSpec): Case3D[] {
     })
   })
   return cases
+}
+
+// ---------------------------------------------------------------------------
+// Static fallbacks (for non-animated bits or when AnimatedScene is absent)
+// ---------------------------------------------------------------------------
+
+function renderStaticComponent(c: PlacedComponent, spec?: WorkcellSpec) {
+  if (c.type === 'fence') return <Fence3D key={c.id} c={c} />
+  if (c.type === 'operator_zone') return <OperatorZone3D key={c.id} c={c} />
+  if (c.type === 'pallet') return <Pallet3D key={c.id} c={c} spec={spec} placedCount={0} />
+  return null
+}
+
+function CellBorder({ w, h }: { w: number; h: number }) {
+  const geom = useMemo(() => {
+    const points = [
+      new THREE.Vector3(0, 0.001, 0),
+      new THREE.Vector3(w, 0.001, 0),
+      new THREE.Vector3(w, 0.001, h),
+      new THREE.Vector3(0, 0.001, h),
+      new THREE.Vector3(0, 0.001, 0),
+    ]
+    return new THREE.BufferGeometry().setFromPoints(points)
+  }, [w, h])
+  return (
+    <primitive
+      object={new THREE.Line(geom, new THREE.LineBasicMaterial({ color: '#94a3b8' }))}
+    />
+  )
 }
 
 function Fence3D({ c }: { c: PlacedComponent }) {
@@ -528,19 +857,9 @@ function Fence3D({ c }: { c: PlacedComponent }) {
   return (
     <group>
       {segments.map((s, i) => (
-        <mesh
-          key={i}
-          position={[s.x, FENCE_HEIGHT / 2, s.z]}
-          rotation={[0, s.angle, 0]}
-          castShadow
-        >
+        <mesh key={i} position={[s.x, FENCE_HEIGHT / 2, s.z]} rotation={[0, s.angle, 0]} castShadow>
           <boxGeometry args={[s.len, FENCE_HEIGHT, FENCE_THICKNESS]} />
-          <meshStandardMaterial
-            color="#dc2626"
-            transparent
-            opacity={0.35}
-            side={THREE.DoubleSide}
-          />
+          <meshStandardMaterial color="#dc2626" transparent opacity={0.35} side={THREE.DoubleSide} />
         </mesh>
       ))}
     </group>
@@ -559,3 +878,4 @@ function OperatorZone3D({ c }: { c: PlacedComponent }) {
     </mesh>
   )
 }
+
