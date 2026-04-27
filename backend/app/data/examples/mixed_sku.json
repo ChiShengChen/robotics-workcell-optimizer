@@ -1,0 +1,32 @@
+{
+  "id": "mixed_sku",
+  "label": "Mixed-SKU e-commerce · GMA · 6-axis",
+  "description": "3 SKUs random sequence; 9m × 7m cell; GMA pallets; 6-axis required for repacking; $220k budget.",
+  "prompt": "Mixed case palletizing for an e-commerce warehouse. Three SKUs through one line in random sequence: 350x250x180 mm 8 kg, 500x400x300 mm 18 kg, 600x400x250 mm 22 kg. Throughput target 700 cph combined. Cell envelope 9 m by 7 m. GMA pallets (48 x 40 inches). The robot needs to repack cases — orientation is not preserved on the infeed, so we need a 6-axis arm. Budget ceiling 220k USD bare arm. Operating 16 hours per day across two shifts.",
+  "spec": {
+    "schema_version": "1.0",
+    "cell_envelope_mm": [9000, 7000],
+    "components": [
+      {"id": "robot_1", "type": "robot", "label": "6-axis palletizer", "payload_kg": 60, "reach_mm": null, "preferred_model": null},
+      {"id": "infeed_1", "type": "conveyor", "label": "Mixed-SKU infeed", "length_mm": 2500, "width_mm": 600, "flow_direction_deg": 0, "role": "infeed", "speed_mps": null},
+      {"id": "pallet_a", "type": "pallet", "label": "GMA pallet A", "standard": "GMA", "length_mm": 1219, "width_mm": 1016, "pattern": "interlock"},
+      {"id": "fence_main", "type": "fence", "label": "Safety fence", "height_mm": 2000, "has_light_curtain": false},
+      {"id": "operator_1", "type": "operator_zone", "label": "Operator access", "width_mm": 1500, "depth_mm": 1500}
+    ],
+    "constraints": [
+      {"kind": "must_reach", "hard": true, "target_id": "pallet_a", "value": null, "description": "Robot must reach the pallet's far corner with 6-axis EOAT for repacking."}
+    ],
+    "throughput": {"cases_per_hour_target": 700, "operating_hours_per_day": 16, "sku_count": 3, "mixed_sequence": true},
+    "case_dims_mm": [600, 400, 300],
+    "case_mass_kg": 22,
+    "pallet_standard": "GMA",
+    "max_stack_height_mm": 1800,
+    "budget_usd": 220000,
+    "assumptions": [
+      "Largest SKU (600x400x300 mm, 22 kg) used as the dimensional design driver.",
+      "GMA standard inferred from imperial 48x40 in -> 1219x1016 mm.",
+      "Mixed sequence triggers 6-axis preference."
+    ],
+    "notes": "3 SKUs random sequence; uses largest case as design driver."
+  }
+}

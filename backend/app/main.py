@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import chat, extract, layout, optimize, score
+from app.api import chat, examples, extract, layout, optimize, score
 
 load_dotenv()
 
@@ -31,3 +31,4 @@ app.include_router(layout.router, prefix="/api")
 app.include_router(score.router, prefix="/api")
 app.include_router(optimize.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
+app.include_router(examples.router, prefix="/api")

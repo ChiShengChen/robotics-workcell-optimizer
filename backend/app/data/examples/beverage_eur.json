@@ -1,0 +1,32 @@
+{
+  "id": "beverage_eur",
+  "label": "Beverage trays · EUR · dual pallet",
+  "description": "500 cph canned beverage line; 12 kg trays; 8m × 6m cell; dual EUR pallets for continuous operation; $160k budget.",
+  "prompt": "We're palletizing canned beverage trays on a single packaging line. Each tray is 400 x 300 x 220 mm and weighs about 12 kg. We need 500 cases per hour, continuous operation with no line stops. Cell footprint is 8 m by 6 m. Use EUR pallets (1200 x 800 mm) and an interlock pattern. Total cell budget around 160k USD.",
+  "spec": {
+    "schema_version": "1.0",
+    "cell_envelope_mm": [8000, 6000],
+    "components": [
+      {"id": "robot_1", "type": "robot", "label": "Palletizer", "payload_kg": null, "reach_mm": null, "preferred_model": null},
+      {"id": "infeed_1", "type": "conveyor", "label": "Tray infeed", "length_mm": 2500, "width_mm": 600, "flow_direction_deg": 0, "role": "infeed", "speed_mps": null},
+      {"id": "pallet_a", "type": "pallet", "label": "EUR pallet A", "standard": "EUR", "length_mm": 1200, "width_mm": 800, "pattern": "interlock"},
+      {"id": "pallet_b", "type": "pallet", "label": "EUR pallet B", "standard": "EUR", "length_mm": 1200, "width_mm": 800, "pattern": "interlock"},
+      {"id": "fence_main", "type": "fence", "label": "Safety fence", "height_mm": 2000, "has_light_curtain": false},
+      {"id": "operator_1", "type": "operator_zone", "label": "Operator access", "width_mm": 1500, "depth_mm": 1500}
+    ],
+    "constraints": [
+      {"kind": "max_cycle_time", "hard": true, "target_id": null, "value": 7.2, "description": "500 cph -> 7.2 s/cycle ceiling."}
+    ],
+    "throughput": {"cases_per_hour_target": 500, "operating_hours_per_day": 20, "sku_count": 1, "mixed_sequence": false},
+    "case_dims_mm": [400, 300, 220],
+    "case_mass_kg": 12,
+    "pallet_standard": "EUR",
+    "max_stack_height_mm": null,
+    "budget_usd": 160000,
+    "assumptions": [
+      "Dual pallet stations inferred from continuous operation requirement.",
+      "Operator access width set to 1500 mm (typical access lane)."
+    ],
+    "notes": "Single-SKU canned-tray palletizing at 500 cph."
+  }
+}

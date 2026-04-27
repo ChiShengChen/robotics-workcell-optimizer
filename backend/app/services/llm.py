@@ -530,7 +530,7 @@ class LLMRouter:
         self.ledger = ledger or CostLedger()
 
     @classmethod
-    def from_env(cls) -> "LLMRouter":
+    def from_env(cls) -> LLMRouter:
         clients: dict[Provider, LLMClient] = {}
         if os.getenv("ANTHROPIC_API_KEY"):
             clients["claude"] = ClaudeClient()

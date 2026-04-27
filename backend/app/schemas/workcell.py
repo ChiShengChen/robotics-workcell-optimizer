@@ -7,7 +7,7 @@ adapters can faithfully translate to each provider's structured-output API.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -83,7 +83,7 @@ class OperatorZone(ComponentBase):
 
 
 Component = Annotated[
-    Union[Robot, Conveyor, Pallet, Fence, OperatorZone],
+    Robot | Conveyor | Pallet | Fence | OperatorZone,
     Field(discriminator="type"),
 ]
 

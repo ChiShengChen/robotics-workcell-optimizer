@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 from app.schemas.layout import LayoutProposal, PlacedComponent, ScoreBreakdown
 from app.schemas.robot import RobotSpec
@@ -308,7 +308,6 @@ def delta_summary(
 #     hierarchy without juggling arbitrary penalty weights.
 
 import math as _math
-
 from dataclasses import dataclass as _dataclass
 
 try:  # pragma: no cover — import shielded so unit tests don't all crash if ortools isn't installed

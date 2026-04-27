@@ -1,0 +1,30 @@
+{
+  "id": "heavy_bag",
+  "label": "Heavy bag · ISO1 · single pallet",
+  "description": "25 kg cement bag palletizing; 10m × 8m cell; ISO1 pallets; single station 600 cph; $250k budget.",
+  "prompt": "Cement bag palletizing line. Each bag is 600 x 400 x 150 mm and weighs 25 kg. Target throughput 600 bags per hour. Cell envelope 10 m by 8 m. ISO1 pallets (1200 x 1000 mm), column stacking pattern. Heavy bag application — needs a high-payload palletizer. Budget around 250k USD.",
+  "spec": {
+    "schema_version": "1.0",
+    "cell_envelope_mm": [10000, 8000],
+    "components": [
+      {"id": "robot_1", "type": "robot", "label": "Heavy palletizer", "payload_kg": 200, "reach_mm": null, "preferred_model": null},
+      {"id": "infeed_1", "type": "conveyor", "label": "Bag infeed", "length_mm": 2500, "width_mm": 600, "flow_direction_deg": 0, "role": "infeed", "speed_mps": null},
+      {"id": "pallet_a", "type": "pallet", "label": "ISO1 pallet", "standard": "ISO1", "length_mm": 1200, "width_mm": 1000, "pattern": "column"},
+      {"id": "fence_main", "type": "fence", "label": "Safety fence", "height_mm": 2000, "has_light_curtain": false},
+      {"id": "operator_1", "type": "operator_zone", "label": "Operator access", "width_mm": 1500, "depth_mm": 1500}
+    ],
+    "constraints": [
+      {"kind": "min_clearance", "hard": true, "target_id": null, "value": 1450, "description": "ISO 13855 separation distance for body access."}
+    ],
+    "throughput": {"cases_per_hour_target": 600, "operating_hours_per_day": 20, "sku_count": 1, "mixed_sequence": false},
+    "case_dims_mm": [600, 400, 150],
+    "case_mass_kg": 25,
+    "pallet_standard": "ISO1",
+    "max_stack_height_mm": 1800,
+    "budget_usd": 250000,
+    "assumptions": [
+      "Robot payload sized for case mass + EOAT (typ. 30 kg) -> 200 kg class palletizer."
+    ],
+    "notes": "Heavy-bag single-station palletizing."
+  }
+}

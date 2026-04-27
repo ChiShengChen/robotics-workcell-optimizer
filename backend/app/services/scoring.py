@@ -16,8 +16,8 @@ All math in mm; trapezoidal motion profile per CLAUDE.md / layout.py.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 from app.schemas.layout import LayoutProposal, PlacedComponent, ScoreBreakdown, Violation
 from app.schemas.robot import RobotSpec

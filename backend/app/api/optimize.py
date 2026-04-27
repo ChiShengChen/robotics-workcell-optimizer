@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -84,7 +85,7 @@ async def optimize(req: OptimizeRequest) -> OptimizeResponse:
 
 
 def _sse(event: str, data: dict[str, Any]) -> bytes:
-    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n".encode("utf-8")
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n".encode()
 
 
 class CPSATOptimizeRequest(BaseModel):
