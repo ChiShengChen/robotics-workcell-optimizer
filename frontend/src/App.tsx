@@ -1,121 +1,84 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+// 3-column layout:
+//   left  (320 px) : InputPanel + SpecPanel
+//   center (flex)  : WorkcellCanvas + VariantsStrip
+//   right (320 px) : ScoringPanel + RobotInfoPanel
+
+import { AlertCircle, X } from 'lucide-react'
+
+import { WorkcellCanvas } from '@/components/canvas/WorkcellCanvas'
+import { VariantsStrip } from '@/components/canvas/VariantsStrip'
+import { InputPanel } from '@/components/panels/InputPanel'
+import { RobotInfoPanel } from '@/components/panels/RobotInfoPanel'
+import { ScoringPanel } from '@/components/panels/ScoringPanel'
+import { SpecPanel } from '@/components/panels/SpecPanel'
+import { Button } from '@/components/ui/button'
+import { useLayoutStore, getActiveProposal } from '@/store/layoutStore'
 
 function App() {
-  const [count, setCount] = useState(0)
+  const errors = useLayoutStore((s) => s.errors)
+  const clearErrors = useLayoutStore((s) => s.clearErrors)
+  const proposal = useLayoutStore(getActiveProposal)
+  const selection = useLayoutStore((s) => s.selection)
+  const setSelection = useLayoutStore((s) => s.setSelection)
+  const updatePose = useLayoutStore((s) => s.updateComponentPose)
+  const resetAll = useLayoutStore((s) => s.resetAll)
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
+    <div className="flex h-screen flex-col bg-slate-100 text-slate-900">
+      <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-2">
         <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
+          <h1 className="text-sm font-semibold tracking-tight">
+            XYZ Robotics — Workcell Layout Optimizer
+          </h1>
+          <p className="text-[11px] text-slate-500">
+            NL → spec → robot selection → optimized 2D layout
           </p>
         </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+        <Button size="sm" variant="ghost" onClick={resetAll}>
+          Reset
+        </Button>
+      </header>
 
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
+      {errors.length > 0 && (
+        <div className="flex items-start justify-between border-b border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700">
+          <div className="flex gap-2">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <ul className="space-y-0.5">
+              {errors.map((e, i) => (
+                <li key={i}>{e}</li>
+              ))}
+            </ul>
+          </div>
+          <button onClick={clearErrors} type="button" className="ml-2">
+            <X className="h-4 w-4" />
+          </button>
         </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+      )}
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+      <main className="grid flex-1 grid-cols-[320px_1fr_320px] gap-3 overflow-hidden p-3">
+        <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto">
+          <InputPanel />
+          <SpecPanel />
+        </aside>
+
+        <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
+          <div className="flex-1 overflow-hidden">
+            <WorkcellCanvas
+              proposal={proposal}
+              selectedId={selection.kind === 'component' ? selection.componentId : null}
+              onSelect={(id) => setSelection(id ? { kind: 'component', componentId: id } : { kind: 'none' })}
+              onComponentMove={(id, pose) => updatePose(id, pose)}
+            />
+          </div>
+          <VariantsStrip />
+        </section>
+
+        <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto">
+          <ScoringPanel />
+          <RobotInfoPanel />
+        </aside>
+      </main>
+    </div>
   )
 }
 
