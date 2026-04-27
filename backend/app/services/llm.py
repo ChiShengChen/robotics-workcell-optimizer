@@ -109,19 +109,43 @@ def _strip_keys(node: Any, keys: set[str]) -> Any:
 
 
 def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
-    """Inline $ref / $defs into a single tree (OpenAI strict and Gemini both prefer flat)."""
+    """Inline $ref / $defs into a single tree (OpenAI strict and Gemini both prefer flat).
+
+    Pydantic v2 emits both bare `{"$ref": "..."}` and mixed
+    `{"$ref": "...", "description": "..."}` forms. We handle both, and also
+    flatten allOf-wrapped refs.
+    """
     defs = schema.pop("$defs", None) or schema.pop("definitions", None) or {}
 
     def resolve(node: Any) -> Any:
         if isinstance(node, dict):
-            if "$ref" in node and len(node) == 1:
-                ref_path = node["$ref"]
-                # only handle local refs like "#/$defs/Foo"
-                key = ref_path.split("/")[-1]
-                if key in defs:
-                    return resolve(defs[key])
-                return node
-            return {k: resolve(v) for k, v in node.items()}
+            # allOf with a single $ref -> inline the ref, merge sibling keys.
+            if (
+                "allOf" in node
+                and isinstance(node["allOf"], list)
+                and len(node["allOf"]) == 1
+                and isinstance(node["allOf"][0], dict)
+                and "$ref" in node["allOf"][0]
+            ):
+                merged = {**node}
+                ref_node = merged.pop("allOf")[0]
+                merged.update(ref_node)
+            else:
+                merged = node
+
+            if "$ref" in merged:
+                key = merged["$ref"].split("/")[-1]
+                target = defs.get(key)
+                if target is not None:
+                    inlined = resolve(target)
+                    if isinstance(inlined, dict):
+                        # Sibling keys (e.g. description) override the ref target.
+                        sibling = {k: v for k, v in merged.items() if k != "$ref"}
+                        return {**inlined, **{k: resolve(v) for k, v in sibling.items()}}
+                    return inlined
+                return merged
+
+            return {k: resolve(v) for k, v in merged.items()}
         if isinstance(node, list):
             return [resolve(v) for v in node]
         return node
@@ -167,12 +191,48 @@ def for_claude(model: type[BaseModel]) -> dict[str, Any]:
 
 
 def for_gemini(model: type[BaseModel]) -> dict[str, Any]:
-    """Gemini response_schema: needs `additionalProperties` stripped (older SDK quirk),
-    and `$defs` inlined.
+    """Gemini response_schema: strict shape — strip everything its `Schema`
+    Pydantic model doesn't accept and convert tuple-style `prefixItems` to
+    a single `items` type (Gemini accepts homogeneous arrays only).
     """
     schema = _inline_refs(model.model_json_schema())
-    schema = _strip_keys(schema, {"additionalProperties", "title", "$schema"})
-    return schema
+    schema = _strip_keys(
+        schema,
+        {
+            "additionalProperties", "title", "$schema",
+            "default", "examples",
+            "minLength", "maxLength", "pattern", "format",
+            "exclusiveMinimum", "exclusiveMaximum",
+        },
+    )
+
+    def normalise(node: Any) -> Any:
+        if isinstance(node, dict):
+            new = {k: normalise(v) for k, v in node.items() if k != "prefixItems"}
+            # Tuples render as prefixItems in Pydantic v2; collapse to items.
+            if "prefixItems" in node:
+                prefix = node["prefixItems"]
+                if isinstance(prefix, list) and prefix:
+                    new["items"] = normalise(prefix[0])
+                new.pop("minItems", None)
+                new.pop("maxItems", None)
+            # Convert anyOf with null -> nullable single type (Gemini quirk).
+            if "anyOf" in new and isinstance(new["anyOf"], list):
+                non_null = [b for b in new["anyOf"] if not (isinstance(b, dict) and b.get("type") == "null")]
+                has_null = any(isinstance(b, dict) and b.get("type") == "null" for b in new["anyOf"])
+                if len(non_null) == 1 and isinstance(non_null[0], dict):
+                    base = non_null[0]
+                    new.pop("anyOf")
+                    for k, v in base.items():
+                        new.setdefault(k, v)
+                    if has_null:
+                        new["nullable"] = True
+            return new
+        if isinstance(node, list):
+            return [normalise(v) for v in node]
+        return node
+
+    return normalise(schema)
 
 
 # ---------------------------------------------------------------------------
@@ -477,14 +537,22 @@ class GeminiClient(LLMClient):
         for msg in messages:
             role = "model" if msg["role"] == "assistant" else "user"
             contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+        # Gemini's Schema model rejects oneOf / discriminator (Pydantic v2 emits
+        # those for discriminated unions like our Component union). Drop
+        # response_schema entirely and rely on JSON mime + the repair loop +
+        # the system prompt's "ONLY JSON" contract.
         config: dict[str, Any] = {
             "temperature": temperature,
             "max_output_tokens": max_tokens,
             "response_mime_type": "application/json",
-            "response_schema": for_gemini(schema),
         }
-        if system:
-            config["system_instruction"] = system
+        schema_text = json.dumps(schema.model_json_schema(), indent=2)
+        sys_with_schema = (
+            (system or "")
+            + "\n\nReturn ONLY JSON matching this Pydantic JSON schema (no markdown, no prose):\n"
+            + schema_text
+        )
+        config["system_instruction"] = sys_with_schema
         t0 = time.perf_counter()
         resp = await self._client.aio.models.generate_content(
             model=m, contents=contents, config=config,
