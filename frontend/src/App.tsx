@@ -1,12 +1,13 @@
 // 3-column layout:
 //   left  (320 px) : InputPanel + SpecPanel
-//   center (flex)  : WorkcellCanvas + VariantsStrip
-//   right (320 px) : ScoringPanel + RobotInfoPanel
+//   center (flex)  : 2D / 3D canvas tabs + VariantsStrip
+//   right (320 px) : ScoringPanel + RobotInfoPanel + StackingPanel
 
 import { useMemo } from 'react'
-import { AlertCircle, X } from 'lucide-react'
+import { AlertCircle, Box, Square, X } from 'lucide-react'
 
 import { WorkcellCanvas } from '@/components/canvas/WorkcellCanvas'
+import { Workcell3DCanvas } from '@/components/canvas/Workcell3DCanvas'
 import { VariantsStrip } from '@/components/canvas/VariantsStrip'
 import { InputPanel } from '@/components/panels/InputPanel'
 import { RobotInfoPanel } from '@/components/panels/RobotInfoPanel'
@@ -14,6 +15,7 @@ import { ScoringPanel } from '@/components/panels/ScoringPanel'
 import { SpecPanel } from '@/components/panels/SpecPanel'
 import { StackingPanel } from '@/components/panels/StackingPanel'
 import { Button } from '@/components/ui/button'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { validateLayout } from '@/lib/validation'
 import { getActiveProposal, useLayoutStore } from '@/store/layoutStore'
 
@@ -27,8 +29,6 @@ function App() {
   const updatePose = useLayoutStore((s) => s.updateComponentPose)
   const resetAll = useLayoutStore((s) => s.resetAll)
 
-  // Client-side validation runs synchronously on every render.
-  // Cheap (<1ms for ~10 components); paints red strokes the moment a drag moves.
   const validation = useMemo(
     () => (proposal && spec ? validateLayout(proposal, spec) : null),
     [proposal, spec],
@@ -73,18 +73,33 @@ function App() {
         </aside>
 
         <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
-          <div className="flex-1 overflow-hidden">
-            <WorkcellCanvas
-              proposal={proposal}
-              spec={spec}
-              selectedId={selection.kind === 'component' ? selection.componentId : null}
-              validation={validation}
-              onSelect={(id) =>
-                setSelection(id ? { kind: 'component', componentId: id } : { kind: 'none' })
-              }
-              onComponentMove={(id, pose, phase) => updatePose(id, pose, phase)}
-            />
-          </div>
+          <Tabs defaultValue="2d" className="flex flex-1 flex-col overflow-hidden">
+            <div className="flex items-center justify-between border-b border-slate-200 bg-white px-2 py-1">
+              <TabsList className="h-7">
+                <TabsTrigger value="2d" className="h-6 text-[11px]">
+                  <Square className="mr-1 h-3 w-3" /> 2D layout
+                </TabsTrigger>
+                <TabsTrigger value="3d" className="h-6 text-[11px]">
+                  <Box className="mr-1 h-3 w-3" /> 3D preview
+                </TabsTrigger>
+              </TabsList>
+            </div>
+            <TabsContent value="2d" className="m-0 flex-1 overflow-hidden">
+              <WorkcellCanvas
+                proposal={proposal}
+                spec={spec}
+                selectedId={selection.kind === 'component' ? selection.componentId : null}
+                validation={validation}
+                onSelect={(id) =>
+                  setSelection(id ? { kind: 'component', componentId: id } : { kind: 'none' })
+                }
+                onComponentMove={(id, pose, phase) => updatePose(id, pose, phase)}
+              />
+            </TabsContent>
+            <TabsContent value="3d" className="relative m-0 flex-1 overflow-hidden">
+              <Workcell3DCanvas proposal={proposal} spec={spec} />
+            </TabsContent>
+          </Tabs>
           <VariantsStrip />
         </section>
 
