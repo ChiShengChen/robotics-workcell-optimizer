@@ -15,6 +15,7 @@ export function VariantsStrip() {
   const proposals = useLayoutStore((s) => s.proposals)
   const activeId = useLayoutStore((s) => s.activeProposalId)
   const setActive = useLayoutStore((s) => s.setActiveProposal)
+  const scoreByProposal = useLayoutStore((s) => s.scoreByProposal)
 
   if (proposals.length === 0) return null
 
@@ -24,30 +25,34 @@ export function VariantsStrip() {
         Variants ({proposals.length})
       </div>
       <div className="flex gap-3 overflow-x-auto pb-1">
-        {proposals.map((p) => (
-          <button
-            key={p.proposal_id}
-            type="button"
-            onClick={() => setActive(p.proposal_id)}
-            className={cn(
-              'shrink-0 rounded border bg-slate-50 p-1 transition',
-              p.proposal_id === activeId
-                ? 'border-blue-500 ring-2 ring-blue-300'
-                : 'border-slate-200 hover:border-slate-400',
-            )}
-          >
-            <Thumbnail proposal={p} />
-            <div className="flex items-center justify-between px-1 pt-1">
-              <span className="text-[10px] font-medium text-slate-700">{p.template}</span>
-              <Badge variant="secondary" className="h-4 px-1.5 text-[9px]">
-                {Math.round(p.estimated_uph)} UPH
-              </Badge>
-            </div>
-            <div className="px-1 text-[9px] text-slate-500">
-              {p.robot_model_id ?? '—'}
-            </div>
-          </button>
-        ))}
+        {proposals.map((p) => {
+          const score = scoreByProposal[p.proposal_id]?.aggregate ?? null
+          const badgeVariant = score === null ? 'secondary' : score >= 0.7 ? 'default' : score >= 0.4 ? 'secondary' : 'destructive'
+          return (
+            <button
+              key={p.proposal_id}
+              type="button"
+              onClick={() => setActive(p.proposal_id)}
+              className={cn(
+                'shrink-0 rounded border bg-slate-50 p-1 transition',
+                p.proposal_id === activeId
+                  ? 'border-blue-500 ring-2 ring-blue-300'
+                  : 'border-slate-200 hover:border-slate-400',
+              )}
+            >
+              <Thumbnail proposal={p} />
+              <div className="flex items-center justify-between px-1 pt-1">
+                <span className="text-[10px] font-medium text-slate-700">{p.template}</span>
+                <Badge variant={badgeVariant} className="h-4 px-1.5 text-[9px]">
+                  {score === null ? `${Math.round(p.estimated_uph)} UPH` : `${Math.round(score * 100)}`}
+                </Badge>
+              </div>
+              <div className="px-1 text-[9px] text-slate-500">
+                {p.robot_model_id ?? '—'}
+              </div>
+            </button>
+          )
+        })}
       </div>
     </div>
   )

@@ -3,6 +3,7 @@
 //   center (flex)  : WorkcellCanvas + VariantsStrip
 //   right (320 px) : ScoringPanel + RobotInfoPanel
 
+import { useMemo } from 'react'
 import { AlertCircle, X } from 'lucide-react'
 
 import { WorkcellCanvas } from '@/components/canvas/WorkcellCanvas'
@@ -12,16 +13,25 @@ import { RobotInfoPanel } from '@/components/panels/RobotInfoPanel'
 import { ScoringPanel } from '@/components/panels/ScoringPanel'
 import { SpecPanel } from '@/components/panels/SpecPanel'
 import { Button } from '@/components/ui/button'
-import { useLayoutStore, getActiveProposal } from '@/store/layoutStore'
+import { validateLayout } from '@/lib/validation'
+import { getActiveProposal, useLayoutStore } from '@/store/layoutStore'
 
 function App() {
   const errors = useLayoutStore((s) => s.errors)
   const clearErrors = useLayoutStore((s) => s.clearErrors)
   const proposal = useLayoutStore(getActiveProposal)
+  const spec = useLayoutStore((s) => s.spec)
   const selection = useLayoutStore((s) => s.selection)
   const setSelection = useLayoutStore((s) => s.setSelection)
   const updatePose = useLayoutStore((s) => s.updateComponentPose)
   const resetAll = useLayoutStore((s) => s.resetAll)
+
+  // Client-side validation runs synchronously on every render.
+  // Cheap (<1ms for ~10 components); paints red strokes the moment a drag moves.
+  const validation = useMemo(
+    () => (proposal && spec ? validateLayout(proposal, spec) : null),
+    [proposal, spec],
+  )
 
   return (
     <div className="flex h-screen flex-col bg-slate-100 text-slate-900">
@@ -65,9 +75,13 @@ function App() {
           <div className="flex-1 overflow-hidden">
             <WorkcellCanvas
               proposal={proposal}
+              spec={spec}
               selectedId={selection.kind === 'component' ? selection.componentId : null}
-              onSelect={(id) => setSelection(id ? { kind: 'component', componentId: id } : { kind: 'none' })}
-              onComponentMove={(id, pose) => updatePose(id, pose)}
+              validation={validation}
+              onSelect={(id) =>
+                setSelection(id ? { kind: 'component', componentId: id } : { kind: 'none' })
+              }
+              onComponentMove={(id, pose, phase) => updatePose(id, pose, phase)}
             />
           </div>
           <VariantsStrip />

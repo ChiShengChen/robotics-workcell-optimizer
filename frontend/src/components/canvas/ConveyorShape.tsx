@@ -1,6 +1,9 @@
 // Conveyor: rectangle with arrow indicating flow.
 
 import { Arrow, Group, Rect, Text } from 'react-konva'
+import type Konva from 'konva'
+
+import { ViolationBadge } from './violationBadge'
 
 interface Props {
   xPx: number
@@ -11,9 +14,12 @@ interface Props {
   label: string
   role: 'infeed' | 'outfeed'
   selected?: boolean
+  violated?: boolean
+  violatedLabel?: string
   onClick?: () => void
   onDragMove?: (xPx: number, yPx: number) => void
   onDragEnd?: (xPx: number, yPx: number) => void
+  dragBoundFunc?: (pos: { x: number; y: number }) => { x: number; y: number }
 }
 
 export function ConveyorShape({
@@ -25,15 +31,19 @@ export function ConveyorShape({
   label,
   role,
   selected = false,
+  violated = false,
+  violatedLabel = '',
   onClick,
   onDragMove,
   onDragEnd,
+  dragBoundFunc,
 }: Props) {
-  // Arrow points along the long axis from start → end.
   const isVertical = Math.abs(((yawDeg % 180) + 180) % 180 - 90) < 1e-3
   const arrow = isVertical
     ? [widthPx / 2, heightPx * 0.85, widthPx / 2, heightPx * 0.15]
     : [widthPx * 0.15, heightPx / 2, widthPx * 0.85, heightPx / 2]
+  const stroke = violated ? '#dc2626' : selected ? '#3b82f6' : '#1e40af'
+  const strokeWidth = violated ? 3 : selected ? 3 : 1
   return (
     <Group
       x={xPx}
@@ -41,15 +51,20 @@ export function ConveyorShape({
       draggable
       onClick={onClick}
       onTap={onClick}
-      onDragMove={(e) => onDragMove?.(e.target.x(), e.target.y())}
-      onDragEnd={(e) => onDragEnd?.(e.target.x(), e.target.y())}
+      dragBoundFunc={dragBoundFunc}
+      onDragMove={(e: Konva.KonvaEventObject<DragEvent>) =>
+        onDragMove?.(e.target.x(), e.target.y())
+      }
+      onDragEnd={(e: Konva.KonvaEventObject<DragEvent>) =>
+        onDragEnd?.(e.target.x(), e.target.y())
+      }
     >
       <Rect
         width={widthPx}
         height={heightPx}
         fill="#dbeafe"
-        stroke={selected ? '#3b82f6' : '#1e40af'}
-        strokeWidth={selected ? 3 : 1}
+        stroke={stroke}
+        strokeWidth={strokeWidth}
         cornerRadius={2}
       />
       <Arrow
@@ -61,14 +76,17 @@ export function ConveyorShape({
         strokeWidth={1.5}
         listening={false}
       />
-      <Text
-        text={`${label} (${role})`}
-        x={4}
-        y={4}
-        fontSize={10}
-        fill="#1e3a8a"
-        listening={false}
-      />
+      <Group scaleY={-1}>
+        <Text
+          text={`${label} (${role})`}
+          x={4}
+          y={-heightPx + 4}
+          fontSize={10}
+          fill="#1e3a8a"
+          listening={false}
+        />
+      </Group>
+      {violated && <ViolationBadge text={violatedLabel} x={widthPx / 2} y={heightPx + 14} />}
     </Group>
   )
 }

@@ -4,6 +4,7 @@ import type {
   ExtractRequest,
   GenerateLayoutRequest,
   LayoutProposal,
+  ScoreBreakdown,
   WorkcellSpec,
 } from './types'
 
@@ -54,6 +55,21 @@ export const api = {
     request<LayoutProposal[]>('/generate-layout', {
       method: 'POST',
       body: JSON.stringify(req),
+      signal,
+    }),
+
+  score: (
+    body: {
+      proposal: LayoutProposal
+      spec: WorkcellSpec
+      robot_model_id?: string | null
+      weights?: Record<string, number>
+    },
+    signal?: AbortSignal,
+  ) =>
+    request<ScoreBreakdown>('/score', {
+      method: 'POST',
+      body: JSON.stringify(body),
       signal,
     }),
 }
