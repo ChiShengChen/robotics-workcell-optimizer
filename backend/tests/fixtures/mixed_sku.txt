@@ -1,0 +1,6 @@
+Mixed case palletizing for an e-commerce warehouse. We have 3 SKUs running through the same line in random sequence:
+- SKU A: 350 x 250 x 180 mm, 8 kg (small cartons)
+- SKU B: 500 x 400 x 300 mm, 18 kg (medium boxes)
+- SKU C: 600 x 400 x 250 mm, 22 kg (large totes)
+
+Throughput target is roughly 700 cases per hour combined. Cell envelope is 9 m x 7 m. We use GMA standard pallets (48 x 40 inches). The robot has to be able to repack the cases — orientation is not preserved on the infeed, so we need a 6-axis arm with pick-and-place flexibility. Budget ceiling is 220k USD bare arm. Operating 16 hours per day across two shifts.
