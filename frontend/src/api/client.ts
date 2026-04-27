@@ -1,6 +1,8 @@
 // Thin fetch wrapper. Vite proxy maps /api -> backend at localhost:8000.
 
 import type {
+  CPSATOptimizeRequest,
+  CPSATOptimizeResponse,
   ExtractRequest,
   GenerateLayoutRequest,
   LayoutProposal,
@@ -78,6 +80,13 @@ export const api = {
 
   optimize: (req: OptimizeRequest, signal?: AbortSignal) =>
     request<OptimizeResponse>('/optimize', {
+      method: 'POST',
+      body: JSON.stringify(req),
+      signal,
+    }),
+
+  optimizeCPSAT: (req: CPSATOptimizeRequest, signal?: AbortSignal) =>
+    request<CPSATOptimizeResponse>('/optimize/cpsat', {
       method: 'POST',
       body: JSON.stringify(req),
       signal,

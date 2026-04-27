@@ -201,3 +201,30 @@ export interface OptimizeProgressEvent {
   current_score: number
   best_score: number
 }
+
+// ---- CP-SAT ---------------------------------------------------------------
+
+export interface CPSATOptimizeRequest {
+  proposal: LayoutProposal
+  spec: WorkcellSpec
+  robot_model_id?: string | null
+  time_limit_s?: number
+  num_workers?: number
+}
+
+export interface CPSATSolverStats {
+  status: string
+  objective: number
+  walltime_s: number
+  num_branches: number
+  num_conflicts: number
+  feasible: boolean
+}
+
+export interface CPSATOptimizeResponse {
+  optimized_proposal: LayoutProposal
+  seed_score: ScoreBreakdown
+  optimized_score: ScoreBreakdown
+  delta_summary: Record<string, number>
+  solver_stats: CPSATSolverStats
+}

@@ -5,6 +5,7 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { ApiError, api, optimizeStream } from '@/api/client'
 import type {
+  CPSATOptimizeResponse,
   LayoutProposal,
   OptimizeResponse,
   ScoreBreakdown,
@@ -48,6 +49,8 @@ interface LayoutState {
   scoreHistory: number[]
   optimizationProgress: OptimizationProgress | null
   lastOptimization: OptimizeResponse | null
+  lastCPSAT: CPSATOptimizeResponse | null
+  isCPSATRunning: boolean
 
   setPrompt: (s: string) => void
   setSelection: (sel: Selection) => void
@@ -62,6 +65,7 @@ interface LayoutState {
   ) => void
   rescoreActive: () => Promise<void>
   runOptimizeSA: (maxIterations?: number) => Promise<void>
+  runOptimizeCPSAT: (timeLimitS?: number) => Promise<void>
   cancelOptimize: () => void
   resetAll: () => void
 }
@@ -153,6 +157,8 @@ export const useLayoutStore = create<LayoutState>()(
       scoreHistory: [],
       optimizationProgress: null,
       lastOptimization: null,
+      lastCPSAT: null,
+      isCPSATRunning: false,
 
       setPrompt: (s) => set({ prompt: s }),
       setSelection: (selection) => set({ selection }),
@@ -374,6 +380,45 @@ export const useLayoutStore = create<LayoutState>()(
         }
       },
 
+      runOptimizeCPSAT: async (timeLimitS = 10) => {
+        const state = get()
+        const spec = state.spec
+        const activeId = state.activeProposalId
+        if (!spec || !activeId) return
+        const proposal = state.proposals.find((p) => p.proposal_id === activeId)
+        if (!proposal) return
+        // CP-SAT runs to completion; no streaming. Cancel any in-flight SA stream first.
+        if (optimizeAbortController) optimizeAbortController.abort()
+        if (scoreDebounceTimer) clearTimeout(scoreDebounceTimer)
+        if (scoreAbortController) scoreAbortController.abort()
+        set({ isCPSATRunning: true, errors: [] })
+        try {
+          const r = await api.optimizeCPSAT({
+            proposal,
+            spec,
+            robot_model_id: proposal.robot_model_id,
+            time_limit_s: timeLimitS,
+          })
+          set((s) => {
+            const newProposals = s.proposals.map((p) =>
+              p.proposal_id === activeId ? r.optimized_proposal : p,
+            )
+            return {
+              proposals: newProposals,
+              scoreByProposal: { ...s.scoreByProposal, [activeId]: r.optimized_score },
+              lastCPSAT: r,
+              isCPSATRunning: false,
+              scoreHistory: [
+                ...s.scoreHistory,
+                r.optimized_score.aggregate,
+              ].slice(-SCORE_HISTORY_MAX),
+            }
+          })
+        } catch (err) {
+          set({ errors: [describeError(err)], isCPSATRunning: false })
+        }
+      },
+
       cancelOptimize: () => {
         if (optimizeAbortController) {
           optimizeAbortController.abort()
@@ -396,7 +441,9 @@ export const useLayoutStore = create<LayoutState>()(
           scoreHistory: [],
           optimizationProgress: null,
           lastOptimization: null,
+          lastCPSAT: null,
           isOptimizing: false,
+          isCPSATRunning: false,
         })
       },
     }),
