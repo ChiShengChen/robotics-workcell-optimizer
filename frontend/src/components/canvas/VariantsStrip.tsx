@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import type { LayoutProposal, PlacedComponent } from '@/api/types'
 import { useLayoutStore } from '@/store/layoutStore'
+import { CompareSheet } from './CompareSheet'
 
 const THUMB_W = 200
 const THUMB_H = 130
@@ -21,8 +22,11 @@ export function VariantsStrip() {
 
   return (
     <div className="border-t border-slate-200 bg-white px-3 py-2">
-      <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-500">
-        Variants ({proposals.length})
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+          Variants ({proposals.length})
+        </span>
+        <CompareSheet />
       </div>
       <div className="flex gap-3 overflow-x-auto pb-1">
         {proposals.map((p) => {

@@ -172,3 +172,32 @@ export interface ApiError {
   status: number
   detail: unknown
 }
+
+// ---- Optimization ----------------------------------------------------------
+
+export interface OptimizeRequest {
+  proposal: LayoutProposal
+  spec: WorkcellSpec
+  robot_model_id?: string | null
+  max_iterations?: number
+  seed?: number | null
+}
+
+export interface OptimizeResponse {
+  optimized_proposal: LayoutProposal
+  seed_score: ScoreBreakdown
+  optimized_score: ScoreBreakdown
+  score_history: number[]
+  best_history: number[]
+  delta_summary: Record<string, number>
+  walltime_s: number
+  iterations: number
+  accepted: number
+  rejected: number
+}
+
+export interface OptimizeProgressEvent {
+  iteration: number
+  current_score: number
+  best_score: number
+}

@@ -13,6 +13,8 @@ import {
   useLayoutStore,
 } from '@/store/layoutStore'
 import type { ScoreBreakdown } from '@/api/types'
+import { OptimizeBar } from './OptimizeBar'
+import { ParetoScatter } from './ParetoScatter'
 
 const SUB_SCORES: {
   key: keyof Pick<
@@ -85,6 +87,8 @@ export function ScoringPanel() {
 
             <ViolationsList violations={score?.violations ?? []} />
 
+            <OptimizeBar />
+
             {history.length > 1 && (
               <>
                 <Separator />
@@ -110,6 +114,9 @@ export function ScoringPanel() {
                 </div>
               </>
             )}
+
+            <Separator />
+            <ParetoScatter />
           </>
         )}
       </CardContent>

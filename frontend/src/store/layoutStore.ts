@@ -3,8 +3,13 @@
 
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import { ApiError, api } from '@/api/client'
-import type { LayoutProposal, ScoreBreakdown, WorkcellSpec } from '@/api/types'
+import { ApiError, api, optimizeStream } from '@/api/client'
+import type {
+  LayoutProposal,
+  OptimizeResponse,
+  ScoreBreakdown,
+  WorkcellSpec,
+} from '@/api/types'
 import { clampRectInside, snapToGrid, type Rect } from '@/lib/geometry'
 
 const DEFAULT_PROMPT =
@@ -20,6 +25,14 @@ export type Selection =
 const SCORE_DEBOUNCE_MS = 150
 const SCORE_HISTORY_MAX = 20
 
+export interface OptimizationProgress {
+  iteration: number
+  totalIterations: number
+  currentScore: number
+  bestScore: number
+  history: { i: number; current: number; best: number }[]
+}
+
 interface LayoutState {
   prompt: string
   spec: WorkcellSpec | null
@@ -29,15 +42,18 @@ interface LayoutState {
   isExtracting: boolean
   isGenerating: boolean
   isScoring: boolean
+  isOptimizing: boolean
   errors: string[]
   scoreByProposal: Record<string, ScoreBreakdown>
-  scoreHistory: number[] // aggregate score over the last N edits
+  scoreHistory: number[]
+  optimizationProgress: OptimizationProgress | null
+  lastOptimization: OptimizeResponse | null
 
   setPrompt: (s: string) => void
   setSelection: (sel: Selection) => void
   clearErrors: () => void
   runExtract: () => Promise<void>
-  runGenerate: () => Promise<void>
+  runGenerate: (temperature?: number) => Promise<void>
   setActiveProposal: (id: string) => void
   updateComponentPose: (
     componentId: string,
@@ -45,6 +61,8 @@ interface LayoutState {
     phase: 'move' | 'end',
   ) => void
   rescoreActive: () => Promise<void>
+  runOptimizeSA: (maxIterations?: number) => Promise<void>
+  cancelOptimize: () => void
   resetAll: () => void
 }
 
@@ -65,6 +83,7 @@ function describeError(err: unknown): string {
 // Module-scoped (not persisted) so debounce + cancellation survive across renders.
 let scoreDebounceTimer: ReturnType<typeof setTimeout> | null = null
 let scoreAbortController: AbortController | null = null
+let optimizeAbortController: AbortController | null = null
 
 function clampPose(
   rect: Rect,
@@ -128,9 +147,12 @@ export const useLayoutStore = create<LayoutState>()(
       isExtracting: false,
       isGenerating: false,
       isScoring: false,
+      isOptimizing: false,
       errors: [],
       scoreByProposal: {},
       scoreHistory: [],
+      optimizationProgress: null,
+      lastOptimization: null,
 
       setPrompt: (s) => set({ prompt: s }),
       setSelection: (selection) => set({ selection }),
@@ -155,7 +177,7 @@ export const useLayoutStore = create<LayoutState>()(
         }
       },
 
-      runGenerate: async () => {
+      runGenerate: async (_temperature?: number) => {
         const spec = get().spec
         if (!spec) {
           set({ errors: ['Run Extract first to produce a WorkcellSpec.'] })
@@ -163,13 +185,18 @@ export const useLayoutStore = create<LayoutState>()(
         }
         set({ isGenerating: true, errors: [] })
         try {
-          const proposals = await api.generateLayout({ spec, n_variants: 3 })
+          // temperature is passed to /api/generate-layout for future LLM-driven
+          // diversity; the greedy generator currently ignores it.
+          const newProposals = await api.generateLayout({ spec, n_variants: 3 })
+          const existing = _temperature !== undefined ? get().proposals : []
+          const combined = [...existing, ...newProposals]
           set({
-            proposals,
-            activeProposalId: proposals[0]?.proposal_id ?? null,
+            proposals: combined,
+            activeProposalId: newProposals[0]?.proposal_id ?? null,
             selection: { kind: 'none' },
-            scoreByProposal: {},
+            scoreByProposal: _temperature !== undefined ? get().scoreByProposal : {},
             scoreHistory: [],
+            lastOptimization: null,
           })
           // Trigger first scoring pass.
           void get().rescoreActive()
@@ -187,9 +214,15 @@ export const useLayoutStore = create<LayoutState>()(
 
       updateComponentPose: (componentId, pose, phase) =>
         set((state) => {
+          // If the user starts dragging during an optimize, cancel the run.
+          if (state.isOptimizing && optimizeAbortController) {
+            optimizeAbortController.abort()
+            optimizeAbortController = null
+          }
           const activeId = state.activeProposalId
           const spec = state.spec
-          if (!activeId || !spec) return state
+          if (!activeId || !spec)
+            return { ...state, isOptimizing: state.isOptimizing && !optimizeAbortController ? false : state.isOptimizing }
           const [cellW, cellH] = spec.cell_envelope_mm
           const proposals = state.proposals.map((p) => {
             if (p.proposal_id !== activeId) return p
@@ -252,9 +285,107 @@ export const useLayoutStore = create<LayoutState>()(
         }
       },
 
+      runOptimizeSA: async (maxIterations = 600) => {
+        const state = get()
+        const spec = state.spec
+        const activeId = state.activeProposalId
+        if (!spec || !activeId) return
+        const proposal = state.proposals.find((p) => p.proposal_id === activeId)
+        if (!proposal) return
+        if (optimizeAbortController) optimizeAbortController.abort()
+        const ac = new AbortController()
+        optimizeAbortController = ac
+        set({
+          isOptimizing: true,
+          optimizationProgress: {
+            iteration: 0,
+            totalIterations: maxIterations,
+            currentScore: 0,
+            bestScore: 0,
+            history: [],
+          },
+          errors: [],
+        })
+        try {
+          await optimizeStream(
+            {
+              proposal,
+              spec,
+              robot_model_id: proposal.robot_model_id,
+              max_iterations: maxIterations,
+            },
+            {
+              onProgress: (e) =>
+                set((s) => {
+                  const prev = s.optimizationProgress
+                  const history = prev?.history ?? []
+                  return {
+                    optimizationProgress: {
+                      iteration: e.iteration,
+                      totalIterations: maxIterations,
+                      currentScore: e.current_score,
+                      bestScore: e.best_score,
+                      history: [
+                        ...history,
+                        { i: e.iteration, current: e.current_score, best: e.best_score },
+                      ].slice(-200),
+                    },
+                  }
+                }),
+              onDone: (r) => {
+                // Cancel pending /api/score (we have a fresh score in r.optimized_score).
+                if (scoreDebounceTimer) clearTimeout(scoreDebounceTimer)
+                if (scoreAbortController) scoreAbortController.abort()
+                set((s) => {
+                  const newProposals = s.proposals.map((p) =>
+                    p.proposal_id === activeId ? r.optimized_proposal : p,
+                  )
+                  return {
+                    proposals: newProposals,
+                    scoreByProposal: {
+                      ...s.scoreByProposal,
+                      [activeId]: r.optimized_score,
+                    },
+                    lastOptimization: r,
+                    isOptimizing: false,
+                    optimizationProgress: null,
+                    scoreHistory: [
+                      ...s.scoreHistory,
+                      r.optimized_score.aggregate,
+                    ].slice(-SCORE_HISTORY_MAX),
+                  }
+                })
+              },
+              onError: (msg) =>
+                set({ errors: [`Optimize failed: ${msg}`], isOptimizing: false, optimizationProgress: null }),
+            },
+            ac.signal,
+          )
+        } catch (err) {
+          if ((err as Error).name === 'AbortError') {
+            set({ isOptimizing: false, optimizationProgress: null })
+            return
+          }
+          set({
+            errors: [describeError(err)],
+            isOptimizing: false,
+            optimizationProgress: null,
+          })
+        }
+      },
+
+      cancelOptimize: () => {
+        if (optimizeAbortController) {
+          optimizeAbortController.abort()
+          optimizeAbortController = null
+        }
+        set({ isOptimizing: false, optimizationProgress: null })
+      },
+
       resetAll: () => {
         if (scoreDebounceTimer) clearTimeout(scoreDebounceTimer)
         if (scoreAbortController) scoreAbortController.abort()
+        if (optimizeAbortController) optimizeAbortController.abort()
         set({
           spec: null,
           proposals: [],
@@ -263,6 +394,9 @@ export const useLayoutStore = create<LayoutState>()(
           errors: [],
           scoreByProposal: {},
           scoreHistory: [],
+          optimizationProgress: null,
+          lastOptimization: null,
+          isOptimizing: false,
         })
       },
     }),
