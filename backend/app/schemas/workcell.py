@@ -11,6 +11,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.obstacle import Obstacle
+
 
 class ComponentBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -155,6 +157,13 @@ class WorkcellSpec(BaseModel):
     )
     budget_usd: float | None = Field(
         default=None, description="Total cell budget in USD; null if unstated."
+    )
+    obstacles: list[Obstacle] = Field(
+        default_factory=list,
+        description=(
+            "Static obstacles (walls, columns, existing equipment) the layout must not "
+            "intrude into. Imported from CAD via /api/cad/import-dxf or hand-authored."
+        ),
     )
     assumptions: list[str] = Field(
         default_factory=list,

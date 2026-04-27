@@ -69,6 +69,8 @@ interface LayoutState {
   runOptimizeCPSAT: (timeLimitS?: number) => Promise<void>
   cancelOptimize: () => void
   loadExample: (example: ExampleSpec) => Promise<void>
+  importCadFloorPlan: (file: File, opts?: { scale_to_mm?: number; margin_mm?: number }) => Promise<void>
+  clearObstacles: () => void
   resetAll: () => void
 }
 
@@ -427,6 +429,63 @@ export const useLayoutStore = create<LayoutState>()(
           optimizeAbortController = null
         }
         set({ isOptimizing: false, optimizationProgress: null })
+      },
+
+      importCadFloorPlan: async (file, opts = {}) => {
+        set({ errors: [] })
+        try {
+          const r = await api.importDxf(file, opts)
+          // Apply obstacles + suggested envelope to current spec (or create one).
+          const existing = get().spec
+          const envelope = r.suggested_cell_envelope_mm ?? existing?.cell_envelope_mm ?? [8000, 6000]
+          const newSpec: WorkcellSpec = existing
+            ? {
+                ...existing,
+                obstacles: r.obstacles,
+                cell_envelope_mm: envelope,
+                assumptions: [
+                  ...existing.assumptions,
+                  `CAD imported: ${r.n_entities_imported} obstacles (${r.n_entities_skipped} skipped); cell envelope set to ${envelope[0].toFixed(0)}×${envelope[1].toFixed(0)} mm.`,
+                ],
+              }
+            : {
+                schema_version: '1.0',
+                cell_envelope_mm: envelope,
+                components: [],
+                constraints: [],
+                throughput: { cases_per_hour_target: 500, operating_hours_per_day: 20, sku_count: 1, mixed_sequence: false },
+                obstacles: r.obstacles,
+                assumptions: [
+                  `CAD imported (${r.n_entities_imported} obstacles); enter a prompt + run Extract to fill in the rest of the spec.`,
+                ],
+                notes: '',
+              }
+          set({
+            spec: newSpec,
+            // Clear stale proposals — they were laid out without obstacles.
+            proposals: [],
+            activeProposalId: null,
+            scoreByProposal: {},
+            scoreHistory: [],
+            lastOptimization: null,
+            lastCPSAT: null,
+          })
+        } catch (err) {
+          set({ errors: [describeError(err)] })
+          throw err
+        }
+      },
+
+      clearObstacles: () => {
+        const spec = get().spec
+        if (!spec) return
+        set({
+          spec: { ...spec, obstacles: [] },
+          proposals: [],
+          activeProposalId: null,
+          scoreByProposal: {},
+          scoreHistory: [],
+        })
       },
 
       loadExample: async (example: ExampleSpec) => {

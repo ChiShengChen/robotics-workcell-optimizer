@@ -25,7 +25,7 @@ export function iso13855SafetyDistanceMm(hasHardGuard: boolean): number {
 
 export interface ComponentViolation {
   componentId: string
-  kind: 'overlap' | 'unreachable' | 'fence_clearance' | 'outside_envelope'
+  kind: 'overlap' | 'unreachable' | 'fence_clearance' | 'outside_envelope' | 'obstacle_intrusion'
   partnerId?: string
   marginMm?: number
   message: string
@@ -38,6 +38,7 @@ export interface ValidationResult {
   fenceClearanceViolations: { componentId: string; slackMm: number }[]
   operatorZoneIntrusion: boolean
   outsideEnvelope: string[]
+  obstacleIntrusions: { componentId: string; obstacleId: string }[]
   summary: { ok: boolean; hardViolations: number; softWarnings: number }
 }
 
@@ -200,9 +201,29 @@ export function validateLayout(
     }
   }
 
+  // 6. Obstacle intrusion (CAD floor plan).
+  const obstacleIntrusions: ValidationResult['obstacleIntrusions'] = []
+  if (spec.obstacles && spec.obstacles.length > 0) {
+    for (const c of bodies) {
+      const r = componentRect(c)
+      for (const ob of spec.obstacles) {
+        if (rectIntersectsPolygon(r, ob.polygon)) {
+          obstacleIntrusions.push({ componentId: c.id, obstacleId: ob.id })
+          push(c.id, {
+            componentId: c.id,
+            kind: 'obstacle_intrusion',
+            partnerId: ob.id,
+            message: `Intersects CAD obstacle ${ob.id}`,
+          })
+          break
+        }
+      }
+    }
+  }
+
   const hardViolations =
     overlaps.length + unreachable.length + fenceClearance.length + outside.length +
-    (operatorIntrusion ? 1 : 0)
+    obstacleIntrusions.length + (operatorIntrusion ? 1 : 0)
 
   return {
     perComponent,
@@ -211,6 +232,7 @@ export function validateLayout(
     fenceClearanceViolations: fenceClearance,
     operatorZoneIntrusion: operatorIntrusion,
     outsideEnvelope: outside,
+    obstacleIntrusions,
     summary: {
       ok: hardViolations === 0,
       hardViolations,
@@ -219,12 +241,77 @@ export function validateLayout(
   }
 }
 
+function rectIntersectsPolygon(r: Rect, polygon: number[][]): boolean {
+  if (!polygon || polygon.length < 2) return false
+  const corners: Point[] = [
+    { x: r.x, y: r.y },
+    { x: r.x + r.w, y: r.y },
+    { x: r.x + r.w, y: r.y + r.h },
+    { x: r.x, y: r.y + r.h },
+  ]
+  // Closed polygon → ray-cast each rect corner.
+  const closed = polygon.length >= 4 &&
+    Math.abs(polygon[0][0] - polygon[polygon.length - 1][0]) < 1e-6 &&
+    Math.abs(polygon[0][1] - polygon[polygon.length - 1][1]) < 1e-6
+  if (closed) {
+    for (const c of corners) {
+      if (pointInPolygon(c, polygon)) return true
+    }
+    for (let i = 0; i < polygon.length - 1; i += 1) {
+      const px = polygon[i][0], py = polygon[i][1]
+      if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) return true
+    }
+  }
+  // Edge-edge crossing.
+  const rectEdges: [Point, Point][] = [
+    [corners[0], corners[1]],
+    [corners[1], corners[2]],
+    [corners[2], corners[3]],
+    [corners[3], corners[0]],
+  ]
+  for (let i = 0; i < polygon.length - 1; i += 1) {
+    const a: Point = { x: polygon[i][0], y: polygon[i][1] }
+    const b: Point = { x: polygon[i + 1][0], y: polygon[i + 1][1] }
+    for (const [r1, r2] of rectEdges) {
+      if (segmentsIntersect(a, b, r1, r2)) return true
+    }
+  }
+  return false
+}
+
+function pointInPolygon(p: Point, poly: number[][]): boolean {
+  let inside = false
+  const n = poly.length - 1
+  let j = n - 1
+  for (let i = 0; i < n; i += 1) {
+    const xi = poly[i][0], yi = poly[i][1]
+    const xj = poly[j][0], yj = poly[j][1]
+    if ((yi > p.y) !== (yj > p.y)) {
+      const xIntersect = ((xj - xi) * (p.y - yi)) / (yj - yi + 1e-12) + xi
+      if (p.x < xIntersect) inside = !inside
+    }
+    j = i
+  }
+  return inside
+}
+
+function segmentsIntersect(a1: Point, a2: Point, b1: Point, b2: Point): boolean {
+  const ccw = (p: Point, q: Point, r: Point) =>
+    (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)
+  const d1 = ccw(b1, b2, a1)
+  const d2 = ccw(b1, b2, a2)
+  const d3 = ccw(a1, a2, b1)
+  const d4 = ccw(a1, a2, b2)
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+         ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+}
+
 export function topViolationLabel(v: ComponentViolation[]): string {
   if (v.length === 0) return ''
-  // Prioritize OVERLAP > REACH > FENCE > ENVELOPE
-  const order = ['overlap', 'unreachable', 'fence_clearance', 'outside_envelope'] as const
+  const order = ['obstacle_intrusion', 'overlap', 'unreachable', 'fence_clearance', 'outside_envelope'] as const
   for (const k of order) {
     if (v.some((x) => x.kind === k)) {
+      if (k === 'obstacle_intrusion') return 'OBSTACLE'
       if (k === 'overlap') return 'OVERLAP'
       if (k === 'unreachable') return 'REACH'
       if (k === 'fence_clearance') return 'FENCE'

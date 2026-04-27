@@ -1,7 +1,7 @@
 // Prompt textarea + Extract / Generate buttons + Load Example dropdown.
 
-import { useEffect, useState } from 'react'
-import { ChevronDown, Loader2, Sparkles, Wand2, Workflow } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronDown, Loader2, Map, Sparkles, Wand2, Workflow, X } from 'lucide-react'
 
 import { api } from '@/api/client'
 import type { ExampleSpec } from '@/api/types'
@@ -20,10 +20,15 @@ export function InputPanel() {
   const runExtract = useLayoutStore((s) => s.runExtract)
   const runGenerate = useLayoutStore((s) => s.runGenerate)
   const loadExample = useLayoutStore((s) => s.loadExample)
+  const importCadFloorPlan = useLayoutStore((s) => s.importCadFloorPlan)
+  const clearObstacles = useLayoutStore((s) => s.clearObstacles)
+  const obstacleCount = useLayoutStore((s) => s.spec?.obstacles?.length ?? 0)
 
   const [examples, setExamples] = useState<ExampleSpec[]>([])
   const [loadingId, setLoadingId] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
+  const [importingCad, setImportingCad] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     let alive = true
@@ -41,6 +46,59 @@ export function InputPanel() {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        <div className="space-y-1">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="w-full justify-start"
+            disabled={importingCad}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            {importingCad ? (
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Map className="mr-1 h-3.5 w-3.5" />
+            )}
+            Import floor plan (.dxf)…
+            {obstacleCount > 0 && (
+              <span className="ml-auto inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 text-[10px] text-slate-600">
+                {obstacleCount} obstacles
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    clearObstacles()
+                  }}
+                  className="hover:text-red-600"
+                  title="Clear obstacles"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            )}
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".dxf,application/dxf"
+            className="hidden"
+            onChange={async (e) => {
+              const f = e.target.files?.[0]
+              if (!f) return
+              setImportingCad(true)
+              try {
+                await importCadFloorPlan(f, { margin_mm: 200 })
+              } catch {
+                /* error already surfaced via store.errors */
+              } finally {
+                setImportingCad(false)
+                if (fileInputRef.current) fileInputRef.current.value = ''
+              }
+            }}
+          />
+        </div>
+
         {examples.length > 0 && (
           <div className="relative">
             <Button

@@ -9,7 +9,7 @@ import { Grid, OrbitControls, RoundedBox, Text } from '@react-three/drei'
 import * as THREE from 'three'
 import { Pause, Play, RotateCcw } from 'lucide-react'
 
-import type { LayoutProposal, PlacedComponent, WorkcellSpec } from '@/api/types'
+import type { LayoutProposal, Obstacle, PlacedComponent, WorkcellSpec } from '@/api/types'
 import { buildStack, type CaseDims, type PalletDims } from '@/lib/stacking'
 import {
   type ArmGeometry,
@@ -80,6 +80,11 @@ export function Workcell3DCanvas({ proposal, spec }: Props) {
           infiniteGrid
           position={[cellW / 2, 0, cellH / 2]}
         />
+
+        {/* CAD obstacles render in both animated + static modes */}
+        {(spec?.obstacles ?? []).map((ob) => (
+          <Obstacle3D key={ob.id} obstacle={ob} />
+        ))}
 
         {proposal && spec ? (
           <AnimatedScene
@@ -958,6 +963,39 @@ function Fence3D({ c }: { c: PlacedComponent }) {
         <mesh key={i} position={[s.x, FENCE_HEIGHT / 2, s.z]} rotation={[0, s.angle, 0]} castShadow>
           <boxGeometry args={[s.len, FENCE_HEIGHT, FENCE_THICKNESS]} />
           <meshStandardMaterial color="#dc2626" transparent opacity={0.35} side={THREE.DoubleSide} />
+        </mesh>
+      ))}
+    </group>
+  )
+}
+
+function Obstacle3D({ obstacle }: { obstacle: Obstacle }) {
+  // Walls extruded 1.5 m tall along each polyline segment.
+  const segments: { x: number; z: number; len: number; angle: number }[] = []
+  const poly = obstacle.polygon
+  if (poly.length < 2) return null
+  for (let i = 0; i < poly.length - 1; i += 1) {
+    const [x0, y0] = poly[i]
+    const [x1, y1] = poly[i + 1]
+    const dx = (x1 - x0) * MM_TO_M
+    const dz = (y1 - y0) * MM_TO_M
+    const len = Math.hypot(dx, dz)
+    if (len < 0.001) continue
+    segments.push({
+      x: ((x0 + x1) / 2) * MM_TO_M,
+      z: ((y0 + y1) / 2) * MM_TO_M,
+      len,
+      angle: -Math.atan2(dz, dx),
+    })
+  }
+  const wallH = 1.5
+  const wallT = 0.06
+  return (
+    <group>
+      {segments.map((s, i) => (
+        <mesh key={i} position={[s.x, wallH / 2, s.z]} rotation={[0, s.angle, 0]} castShadow receiveShadow>
+          <boxGeometry args={[s.len, wallH, wallT]} />
+          <meshStandardMaterial color="#475569" roughness={0.8} />
         </mesh>
       ))}
     </group>

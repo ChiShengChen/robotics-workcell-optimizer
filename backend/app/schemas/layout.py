@@ -74,6 +74,7 @@ class Violation(BaseModel):
         "operator_zone_intrusion",
         "iso13855",
         "outside_envelope",
+        "obstacle_intrusion",
     ] = Field(description="Violation category.")
     severity: Literal["hard", "soft"] = Field(description="Hard violations zero the aggregate.")
     component_ids: list[str] = Field(description="Components implicated.")

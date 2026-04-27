@@ -1,6 +1,7 @@
 // Thin fetch wrapper. Vite proxy maps /api -> backend at localhost:8000.
 
 import type {
+  CadImportResponse,
   CPSATOptimizeRequest,
   CPSATOptimizeResponse,
   ExampleSpec,
@@ -95,6 +96,30 @@ export const api = {
 
   examples: (signal?: AbortSignal) =>
     request<ExampleSpec[]>('/examples', { method: 'GET', signal }),
+
+  importDxf: async (
+    file: File,
+    opts: { scale_to_mm?: number; margin_mm?: number } = {},
+    signal?: AbortSignal,
+  ): Promise<CadImportResponse> => {
+    const form = new FormData()
+    form.append('file', file)
+    const params = new URLSearchParams()
+    if (opts.scale_to_mm !== undefined) params.set('scale_to_mm', String(opts.scale_to_mm))
+    if (opts.margin_mm !== undefined) params.set('margin_mm', String(opts.margin_mm))
+    const qs = params.toString()
+    const resp = await fetch(`${BASE_URL}/cad/import-dxf${qs ? `?${qs}` : ''}`, {
+      method: 'POST',
+      body: form,
+      signal,
+    })
+    if (!resp.ok) {
+      let detail: unknown = await resp.text()
+      try { detail = JSON.parse(detail as string) } catch { /* keep raw */ }
+      throw new ApiError(resp.status, detail)
+    }
+    return (await resp.json()) as CadImportResponse
+  },
 }
 
 /** Stream SA progress via fetch + SSE parsing.

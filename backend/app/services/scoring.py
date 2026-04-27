@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from app.schemas.layout import LayoutProposal, PlacedComponent, ScoreBreakdown, Violation
 from app.schemas.robot import RobotSpec
 from app.schemas.workcell import WorkcellSpec
+from app.services.cad_import import aabb_intersects_polygon
 from app.services.layout import (
     A_MAX_MM_S2_4AXIS,
     SIX_AXIS_DERATE,
@@ -423,6 +424,29 @@ def _check_overlaps(proposal: LayoutProposal) -> list[Violation]:
     return violations
 
 
+def _check_obstacle_intrusion(
+    proposal: LayoutProposal, spec: WorkcellSpec
+) -> list[Violation]:
+    """Any movable body whose bbox intersects an obstacle polygon = HARD violation."""
+    if not spec.obstacles:
+        return []
+    bodies = [c for c in proposal.components if c.type not in ("fence",)]
+    violations: list[Violation] = []
+    for c in bodies:
+        rect = _bbox_for(c)
+        for ob in spec.obstacles:
+            if aabb_intersects_polygon(rect.x, rect.y, rect.w, rect.h, ob.polygon):
+                violations.append(
+                    Violation(
+                        kind="obstacle_intrusion", severity="hard",
+                        component_ids=[c.id, ob.id],
+                        message=f"{c.id} intersects CAD obstacle {ob.id} ({ob.source_entity}).",
+                    )
+                )
+                break
+    return violations
+
+
 def _check_envelope(
     proposal: LayoutProposal, spec: WorkcellSpec
 ) -> list[Violation]:
@@ -469,6 +493,7 @@ def score_layout(
     violations.extend(safety["violations"])
     violations.extend(_check_overlaps(proposal))
     violations.extend(_check_envelope(proposal, spec))
+    violations.extend(_check_obstacle_intrusion(proposal, spec))
 
     has_hard = any(v.severity == "hard" for v in violations)
     sub_scores = {

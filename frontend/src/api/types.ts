@@ -86,6 +86,24 @@ export interface Throughput {
   mixed_sequence: boolean
 }
 
+export interface Obstacle {
+  id: string
+  polygon: [number, number][]   // [[x_mm, y_mm], ...]
+  closed: boolean
+  source_layer?: string | null
+  source_entity?: string | null
+  label?: string | null
+}
+
+export interface CadImportResponse {
+  obstacles: Obstacle[]
+  bounding_box_mm: [number, number, number, number] | null
+  suggested_cell_envelope_mm: [number, number] | null
+  units_assumed: string
+  n_entities_imported: number
+  n_entities_skipped: number
+}
+
 export interface WorkcellSpec {
   schema_version: '1.0'
   cell_envelope_mm: [number, number]
@@ -97,6 +115,7 @@ export interface WorkcellSpec {
   pallet_standard?: PalletStandard | null
   max_stack_height_mm?: number | null
   budget_usd?: number | null
+  obstacles: Obstacle[]
   assumptions: string[]
   notes: string
 }

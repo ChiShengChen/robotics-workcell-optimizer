@@ -63,6 +63,7 @@ export function WorkcellCanvas({
   const components = proposal?.components ?? []
   const fence = components.find((c) => c.type === 'fence')
   const dynamic = components.filter((c) => c.type !== 'fence')
+  const obstacles = spec?.obstacles ?? []
 
   // 1m grid lines (visual reference); store snap is 50 mm.
   const gridLines: number[][] = []
@@ -102,6 +103,20 @@ export function WorkcellCanvas({
               }
             />
           )}
+          {/* CAD obstacles — gray polylines/polygons */}
+          {obstacles.map((ob) => {
+            const pts = ob.polygon.flatMap(([x, y]) => [mmToPx(x), mmToPx(y)])
+            return (
+              <Line
+                key={ob.id}
+                points={pts}
+                stroke="#475569"
+                strokeWidth={1.5}
+                closed={ob.closed}
+                fill={ob.closed ? 'rgba(71, 85, 105, 0.25)' : undefined}
+              />
+            )
+          })}
         </Layer>
 
         {/* Dynamic layer */}
