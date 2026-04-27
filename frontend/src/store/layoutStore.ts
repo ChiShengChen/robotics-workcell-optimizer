@@ -6,6 +6,7 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import { ApiError, api, optimizeStream } from '@/api/client'
 import type {
   CPSATOptimizeResponse,
+  ExampleSpec,
   LayoutProposal,
   OptimizeResponse,
   ScoreBreakdown,
@@ -67,6 +68,7 @@ interface LayoutState {
   runOptimizeSA: (maxIterations?: number) => Promise<void>
   runOptimizeCPSAT: (timeLimitS?: number) => Promise<void>
   cancelOptimize: () => void
+  loadExample: (example: ExampleSpec) => Promise<void>
   resetAll: () => void
 }
 
@@ -425,6 +427,27 @@ export const useLayoutStore = create<LayoutState>()(
           optimizeAbortController = null
         }
         set({ isOptimizing: false, optimizationProgress: null })
+      },
+
+      loadExample: async (example: ExampleSpec) => {
+        // Skip /api/extract — example bundle ships with a pre-extracted spec.
+        if (scoreDebounceTimer) clearTimeout(scoreDebounceTimer)
+        if (scoreAbortController) scoreAbortController.abort()
+        if (optimizeAbortController) optimizeAbortController.abort()
+        set({
+          prompt: example.prompt,
+          spec: example.spec,
+          proposals: [],
+          activeProposalId: null,
+          selection: { kind: 'none' },
+          scoreByProposal: {},
+          scoreHistory: [],
+          lastOptimization: null,
+          lastCPSAT: null,
+          errors: [],
+        })
+        // Auto-generate layouts so the demo lands on a populated canvas.
+        await get().runGenerate()
       },
 
       resetAll: () => {

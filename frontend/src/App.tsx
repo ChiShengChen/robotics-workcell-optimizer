@@ -12,6 +12,7 @@ import { InputPanel } from '@/components/panels/InputPanel'
 import { RobotInfoPanel } from '@/components/panels/RobotInfoPanel'
 import { ScoringPanel } from '@/components/panels/ScoringPanel'
 import { SpecPanel } from '@/components/panels/SpecPanel'
+import { StackingPanel } from '@/components/panels/StackingPanel'
 import { Button } from '@/components/ui/button'
 import { validateLayout } from '@/lib/validation'
 import { getActiveProposal, useLayoutStore } from '@/store/layoutStore'
@@ -90,6 +91,7 @@ function App() {
         <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto">
           <ScoringPanel />
           <RobotInfoPanel />
+          <StackingPanel />
         </aside>
       </main>
     </div>

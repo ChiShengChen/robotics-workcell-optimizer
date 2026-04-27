@@ -3,6 +3,7 @@
 import type {
   CPSATOptimizeRequest,
   CPSATOptimizeResponse,
+  ExampleSpec,
   ExtractRequest,
   GenerateLayoutRequest,
   LayoutProposal,
@@ -91,6 +92,9 @@ export const api = {
       body: JSON.stringify(req),
       signal,
     }),
+
+  examples: (signal?: AbortSignal) =>
+    request<ExampleSpec[]>('/examples', { method: 'GET', signal }),
 }
 
 /** Stream SA progress via fetch + SSE parsing.

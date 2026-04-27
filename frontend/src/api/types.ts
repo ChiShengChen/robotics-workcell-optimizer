@@ -173,6 +173,14 @@ export interface ApiError {
   detail: unknown
 }
 
+export interface ExampleSpec {
+  id: string
+  label: string
+  description: string
+  prompt: string
+  spec: WorkcellSpec
+}
+
 // ---- Optimization ----------------------------------------------------------
 
 export interface OptimizeRequest {

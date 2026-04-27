@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 540" font-family="ui-sans-serif, -apple-system, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#475569"/>
+    </marker>
+  </defs>
+  <style>
+    .col { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.5; }
+    .box { stroke-width: 1.2; }
+    .frontend { fill: #dbeafe; stroke: #1e40af; }
+    .gateway { fill: #ddd6fe; stroke: #5b21b6; }
+    .service { fill: #fef3c7; stroke: #a16207; }
+    .schema { fill: #d1fae5; stroke: #047857; }
+    .external { fill: #fce7f3; stroke: #9d174d; }
+    .label { font-size: 12px; font-weight: 600; fill: #0f172a; }
+    .small { font-size: 10px; fill: #475569; }
+    .title { font-size: 14px; font-weight: 700; fill: #0f172a; }
+    .arrow { stroke: #475569; stroke-width: 1.4; fill: none; marker-end: url(#arrow); }
+    .label-arrow { font-size: 10px; fill: #475569; }
+  </style>
+
+  <!-- Column titles -->
+  <rect x="20" y="14" width="280" height="500" rx="8" class="col"/>
+  <text x="160" y="36" text-anchor="middle" class="title">Frontend</text>
+  <text x="160" y="50" text-anchor="middle" class="small">React 18 + Vite + Tailwind + shadcn</text>
+
+  <rect x="350" y="14" width="320" height="500" rx="8" class="col"/>
+  <text x="510" y="36" text-anchor="middle" class="title">Backend (FastAPI)</text>
+  <text x="510" y="50" text-anchor="middle" class="small">Python 3.13 + Pydantic v2 + OR-Tools</text>
+
+  <rect x="720" y="14" width="240" height="500" rx="8" class="col"/>
+  <text x="840" y="36" text-anchor="middle" class="title">External</text>
+
+  <!-- Frontend boxes -->
+  <rect x="40" y="70" width="240" height="44" rx="6" class="box frontend"/>
+  <text x="160" y="90" text-anchor="middle" class="label">WorkcellCanvas (Konva)</text>
+  <text x="160" y="104" text-anchor="middle" class="small">drag · violation badges · scaleY=-1</text>
+
+  <rect x="40" y="124" width="240" height="44" rx="6" class="box frontend"/>
+  <text x="160" y="144" text-anchor="middle" class="label">Variants strip + Compare sheet</text>
+  <text x="160" y="158" text-anchor="middle" class="small">thumbnails · score table · Pareto</text>
+
+  <rect x="40" y="178" width="240" height="44" rx="6" class="box frontend"/>
+  <text x="160" y="198" text-anchor="middle" class="label">Scoring panel + OptimizeBar</text>
+  <text x="160" y="212" text-anchor="middle" class="small">5 bars · SA / CP-SAT tabs · sparkline</text>
+
+  <rect x="40" y="232" width="240" height="44" rx="6" class="box frontend"/>
+  <text x="160" y="252" text-anchor="middle" class="label">Stacking visualizer</text>
+  <text x="160" y="266" text-anchor="middle" class="small">column · interlock · pinwheel</text>
+
+  <rect x="40" y="296" width="240" height="44" rx="6" class="box frontend"/>
+  <text x="160" y="316" text-anchor="middle" class="label">Zustand store + persist</text>
+  <text x="160" y="330" text-anchor="middle" class="small">scoreByProposal · scoreHistory · selection</text>
+
+  <rect x="40" y="350" width="240" height="44" rx="6" class="box frontend"/>
+  <text x="160" y="370" text-anchor="middle" class="label">api/client.ts + types.ts</text>
+  <text x="160" y="384" text-anchor="middle" class="small">fetch · SSE parser · TS mirror of Pydantic</text>
+
+  <rect x="40" y="410" width="240" height="44" rx="6" class="box frontend"/>
+  <text x="160" y="430" text-anchor="middle" class="label">lib/validation.ts + geometry.ts</text>
+  <text x="160" y="444" text-anchor="middle" class="small">client-side AABB / reach / fence checks</text>
+
+  <!-- Backend boxes -->
+  <rect x="370" y="70" width="280" height="46" rx="6" class="box gateway"/>
+  <text x="510" y="90" text-anchor="middle" class="label">/api routers</text>
+  <text x="510" y="106" text-anchor="middle" class="small">extract · generate-layout · score · optimize · cpsat · examples</text>
+
+  <rect x="370" y="130" width="130" height="48" rx="6" class="box service"/>
+  <text x="435" y="150" text-anchor="middle" class="label">LLMRouter</text>
+  <text x="435" y="166" text-anchor="middle" class="small">3 adapters · repair · fallback</text>
+
+  <rect x="520" y="130" width="130" height="48" rx="6" class="box service"/>
+  <text x="585" y="150" text-anchor="middle" class="label">CatalogService</text>
+  <text x="585" y="166" text-anchor="middle" class="small">22 robots · find / by_id</text>
+
+  <rect x="370" y="190" width="130" height="48" rx="6" class="box service"/>
+  <text x="435" y="210" text-anchor="middle" class="label">LayoutService</text>
+  <text x="435" y="226" text-anchor="middle" class="small">4 templates · greedy</text>
+
+  <rect x="520" y="190" width="130" height="48" rx="6" class="box service"/>
+  <text x="585" y="210" text-anchor="middle" class="label">ScoringService</text>
+  <text x="585" y="226" text-anchor="middle" class="small">5 components + violations</text>
+
+  <rect x="370" y="250" width="280" height="48" rx="6" class="box service"/>
+  <text x="510" y="270" text-anchor="middle" class="label">OptimizerService</text>
+  <text x="510" y="286" text-anchor="middle" class="small">SAOptimizer (SSE) · CPSATRefiner (AddNoOverlap2D + 16-gon)</text>
+
+  <rect x="370" y="310" width="280" height="44" rx="6" class="box schema"/>
+  <text x="510" y="330" text-anchor="middle" class="label">Pydantic schemas</text>
+  <text x="510" y="344" text-anchor="middle" class="small">WorkcellSpec · LayoutProposal · ScoreBreakdown</text>
+
+  <rect x="370" y="364" width="280" height="44" rx="6" class="box schema"/>
+  <text x="510" y="384" text-anchor="middle" class="label">data/robots.json + examples/*.json</text>
+  <text x="510" y="398" text-anchor="middle" class="small">22 palletizers · bundled spec demos</text>
+
+  <!-- External boxes -->
+  <rect x="740" y="90" width="200" height="44" rx="6" class="box external"/>
+  <text x="840" y="110" text-anchor="middle" class="label">Anthropic API</text>
+  <text x="840" y="124" text-anchor="middle" class="small">claude-haiku-4-5 / sonnet-4-5</text>
+
+  <rect x="740" y="144" width="200" height="44" rx="6" class="box external"/>
+  <text x="840" y="164" text-anchor="middle" class="label">OpenAI API</text>
+  <text x="840" y="178" text-anchor="middle" class="small">gpt-5-nano / gpt-4.1 (json_schema)</text>
+
+  <rect x="740" y="198" width="200" height="44" rx="6" class="box external"/>
+  <text x="840" y="218" text-anchor="middle" class="label">Google Gemini API</text>
+  <text x="840" y="232" text-anchor="middle" class="small">gemini-2.5-flash / pro (response_schema)</text>
+
+  <rect x="740" y="262" width="200" height="44" rx="6" class="box external"/>
+  <text x="840" y="282" text-anchor="middle" class="label">OR-Tools CP-SAT</text>
+  <text x="840" y="296" text-anchor="middle" class="small">add_no_overlap_2d · portfolio search</text>
+
+  <rect x="740" y="316" width="200" height="44" rx="6" class="box external"/>
+  <text x="840" y="336" text-anchor="middle" class="label">Browser localStorage</text>
+  <text x="840" y="350" text-anchor="middle" class="small">prompt · spec · proposals (Zustand)</text>
+
+  <!-- Arrows -->
+  <line x1="280" y1="372" x2="370" y2="92" class="arrow"/>
+  <text x="320" y="220" class="label-arrow">/api fetch + SSE</text>
+
+  <line x1="650" y1="154" x2="740" y2="112" class="arrow"/>
+  <line x1="650" y1="154" x2="740" y2="166" class="arrow"/>
+  <line x1="650" y1="154" x2="740" y2="220" class="arrow"/>
+
+  <line x1="650" y1="274" x2="740" y2="284" class="arrow"/>
+
+  <line x1="280" y1="318" x2="740" y2="338" class="arrow"/>
+  <text x="500" y="445" class="label-arrow">Zustand persist (prompt + spec + proposals)</text>
+
+  <!-- Footer -->
+  <text x="490" y="520" text-anchor="middle" class="small">
+    Neuro-symbolic split: LLM picks discrete decisions (template, robot model, infeasibility explanations) · numerical solver (SA / CP-SAT) picks continuous positions
+  </text>
+</svg>
