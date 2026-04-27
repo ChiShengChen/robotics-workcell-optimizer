@@ -1,0 +1,51 @@
+[project]
+name = "xyz-workcell-backend"
+version = "0.1.0"
+description = "LLM-driven workcell layout optimizer backend (FastAPI + OR-Tools + multi-LLM)."
+requires-python = ">=3.11"
+readme = "../README.md"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.5",
+    "python-dotenv>=1.0",
+    "ortools>=9.10",
+    "numpy>=1.26",
+    "anthropic>=0.40",
+    "openai>=1.55",
+    "google-genai>=0.3",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "black>=24.10",
+    "mypy>=1.13",
+    "respx>=0.21",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
