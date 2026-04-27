@@ -4,7 +4,7 @@
 
 import { useMemo } from 'react'
 import { Canvas } from '@react-three/fiber'
-import { Grid, OrbitControls } from '@react-three/drei'
+import { Grid, OrbitControls, RoundedBox } from '@react-three/drei'
 import * as THREE from 'three'
 
 import type { LayoutProposal, PlacedComponent, WorkcellSpec } from '@/api/types'
@@ -22,7 +22,6 @@ interface Props {
 const MM_TO_M = 0.001
 const ROBOT_BASE_HEIGHT = 0.6 // m
 const CONVEYOR_HEIGHT = 0.9
-const PALLET_THICKNESS = 0.15
 const FENCE_HEIGHT = 2.0
 const FENCE_THICKNESS = 0.04
 const OPERATOR_PAD_HEIGHT = 0.02
@@ -131,23 +130,92 @@ function Robot3D({ c }: { c: PlacedComponent }) {
   const x = c.x_mm * MM_TO_M
   const z = c.y_mm * MM_TO_M
 
+  // 4-axis palletizer kinematics (stylised static pose):
+  //   J1 base rotation (vertical axis) — implicit in the cylindrical base.
+  //   J2 lower arm pitching up at θ2 from a hip joint.
+  //   J3 upper arm pitching at θ3, kept horizontal by the parallelogram link.
+  //   J4 wrist rotation keeps the EOAT vertical (palletizer convention).
+  // We pose the arm extended at ~70% reach toward +x so reviewers see it
+  // hovering over the pallet instead of stowed straight up.
+  const HIP_HEIGHT = ROBOT_BASE_HEIGHT + baseR * 0.35
+  const LOWER_LEN = reach * 0.55
+  const UPPER_LEN = reach * 0.55
+  const THETA2 = (60 * Math.PI) / 180   // lower arm pitch up from horizontal
+  const THETA3 = (-25 * Math.PI) / 180  // upper arm pitch down from horizontal
+  // Forward/up endpoint of lower arm.
+  const elbowX = LOWER_LEN * Math.cos(THETA2)
+  const elbowY = HIP_HEIGHT + LOWER_LEN * Math.sin(THETA2)
+  // Endpoint of upper arm (= wrist position).
+  const wristX = elbowX + UPPER_LEN * Math.cos(THETA3)
+  const wristY = elbowY + UPPER_LEN * Math.sin(THETA3)
+  const armR = baseR * 0.18
+
   return (
     <group position={[x, 0, z]}>
-      {/* Base */}
-      <mesh position={[0, ROBOT_BASE_HEIGHT / 2, 0]} castShadow>
-        <cylinderGeometry args={[baseR, baseR, ROBOT_BASE_HEIGHT, 32]} />
-        <meshStandardMaterial color="#1f2937" metalness={0.3} roughness={0.5} />
+      {/* Base column */}
+      <mesh position={[0, ROBOT_BASE_HEIGHT / 2, 0]} castShadow receiveShadow>
+        <cylinderGeometry args={[baseR, baseR * 1.05, ROBOT_BASE_HEIGHT, 32]} />
+        <meshStandardMaterial color="#1f2937" metalness={0.45} roughness={0.4} />
       </mesh>
-      {/* Stylised arm — primary segment */}
-      <mesh position={[0, ROBOT_BASE_HEIGHT + 0.3, 0]} castShadow>
-        <cylinderGeometry args={[baseR * 0.4, baseR * 0.5, 0.6, 16]} />
-        <meshStandardMaterial color="#fbbf24" metalness={0.4} roughness={0.4} />
+      {/* Hip joint housing */}
+      <mesh position={[0, HIP_HEIGHT, 0]} rotation={[Math.PI / 2, 0, 0]} castShadow>
+        <cylinderGeometry args={[baseR * 0.45, baseR * 0.45, baseR * 0.7, 24]} />
+        <meshStandardMaterial color="#fbbf24" metalness={0.5} roughness={0.35} />
       </mesh>
-      {/* Stylised arm — extended segment */}
-      <mesh position={[reach * 0.5, ROBOT_BASE_HEIGHT + 0.6, 0]} rotation={[0, 0, Math.PI / 2]} castShadow>
-        <cylinderGeometry args={[0.08, 0.1, reach * 0.95, 12]} />
-        <meshStandardMaterial color="#f59e0b" metalness={0.4} roughness={0.4} />
+      {/* Lower arm (J2) */}
+      <Cylinder
+        from={[0, HIP_HEIGHT, 0]}
+        to={[elbowX, elbowY, 0]}
+        radius={armR}
+        color="#f97316"
+      />
+      {/* Elbow housing */}
+      <mesh position={[elbowX, elbowY, 0]} rotation={[Math.PI / 2, 0, 0]} castShadow>
+        <cylinderGeometry args={[armR * 1.4, armR * 1.4, armR * 1.6, 20]} />
+        <meshStandardMaterial color="#fbbf24" metalness={0.5} roughness={0.35} />
       </mesh>
+      {/* Upper arm (J3) */}
+      <Cylinder
+        from={[elbowX, elbowY, 0]}
+        to={[wristX, wristY, 0]}
+        radius={armR}
+        color="#f97316"
+      />
+      {/* Parallelogram link — slim secondary arm offset above for that
+          characteristic palletizer silhouette. */}
+      <Cylinder
+        from={[0, HIP_HEIGHT + baseR * 0.45, 0]}
+        to={[elbowX, elbowY + baseR * 0.45, 0]}
+        radius={armR * 0.6}
+        color="#9ca3af"
+      />
+      <Cylinder
+        from={[elbowX, elbowY + baseR * 0.45, 0]}
+        to={[wristX, wristY + baseR * 0.05, 0]}
+        radius={armR * 0.6}
+        color="#9ca3af"
+      />
+      {/* J4 wrist (vertical) + EOAT */}
+      <mesh position={[wristX, wristY - 0.08, 0]} castShadow>
+        <cylinderGeometry args={[armR * 1.2, armR * 1.2, 0.16, 16]} />
+        <meshStandardMaterial color="#1f2937" metalness={0.5} roughness={0.4} />
+      </mesh>
+      {/* EOAT (vacuum-style end effector plate) */}
+      <mesh position={[wristX, wristY - 0.22, 0]} castShadow>
+        <boxGeometry args={[0.32, 0.04, 0.32]} />
+        <meshStandardMaterial color="#0f172a" metalness={0.4} roughness={0.5} />
+      </mesh>
+      {[
+        [-0.1, -0.245, -0.1],
+        [0.1, -0.245, -0.1],
+        [-0.1, -0.245, 0.1],
+        [0.1, -0.245, 0.1],
+      ].map(([dx, dy, dz], i) => (
+        <mesh key={i} position={[wristX + dx, wristY + dy, dz]} castShadow>
+          <cylinderGeometry args={[0.04, 0.05, 0.05, 12]} />
+          <meshStandardMaterial color="#475569" metalness={0.3} roughness={0.6} />
+        </mesh>
+      ))}
       {/* Effective-reach floor ring */}
       <mesh position={[0, 0.005, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <ringGeometry args={[eff - 0.02, eff + 0.02, 64]} />
@@ -162,6 +230,40 @@ function Robot3D({ c }: { c: PlacedComponent }) {
   )
 }
 
+/** Cylinder rendered between two world-space points. */
+function Cylinder({
+  from,
+  to,
+  radius,
+  color,
+}: {
+  from: [number, number, number]
+  to: [number, number, number]
+  radius: number
+  color: string
+}) {
+  const dx = to[0] - from[0]
+  const dy = to[1] - from[1]
+  const dz = to[2] - from[2]
+  const length = Math.hypot(dx, dy, dz) || 1e-6
+  const midpoint: [number, number, number] = [
+    (from[0] + to[0]) / 2,
+    (from[1] + to[1]) / 2,
+    (from[2] + to[2]) / 2,
+  ]
+  // Default cylinderGeometry is aligned to +Y; rotate to match (dx, dy, dz).
+  const axis = new THREE.Vector3(dx, dy, dz).normalize()
+  const yAxis = new THREE.Vector3(0, 1, 0)
+  const quat = new THREE.Quaternion().setFromUnitVectors(yAxis, axis)
+  const euler = new THREE.Euler().setFromQuaternion(quat)
+  return (
+    <mesh position={midpoint} rotation={[euler.x, euler.y, euler.z]} castShadow receiveShadow>
+      <cylinderGeometry args={[radius, radius, length, 16]} />
+      <meshStandardMaterial color={color} metalness={0.45} roughness={0.4} />
+    </mesh>
+  )
+}
+
 function Conveyor3D({ c }: { c: PlacedComponent }) {
   const length = ((c.dims.length_mm as number | undefined) ?? 2000) * MM_TO_M
   const width = ((c.dims.width_mm as number | undefined) ?? 600) * MM_TO_M
@@ -170,24 +272,88 @@ function Conveyor3D({ c }: { c: PlacedComponent }) {
   const h = isVertical ? length : width
   const x = c.x_mm * MM_TO_M + w / 2
   const z = c.y_mm * MM_TO_M + h / 2
+
+  // Roller layout: rollers run perpendicular to flow, evenly spaced along
+  // the long axis (every ~120 mm). When yaw=90 the long axis is z, otherwise x.
+  const longAxisLen = isVertical ? h : w
+  const shortAxisLen = isVertical ? w : h
+  const rollerSpacing = 0.12
+  const rollerR = 0.025
+  const nRollers = Math.max(2, Math.floor(longAxisLen / rollerSpacing))
+  const rollerLen = shortAxisLen * 0.92
+  const longStart = -longAxisLen / 2 + rollerSpacing / 2
+
   return (
     <group position={[x, 0, z]}>
-      {/* Belt body */}
-      <mesh position={[0, CONVEYOR_HEIGHT / 2, 0]} castShadow receiveShadow>
-        <boxGeometry args={[w, CONVEYOR_HEIGHT, h]} />
-        <meshStandardMaterial color="#1e40af" metalness={0.2} roughness={0.6} />
+      {/* Side rails (left + right relative to flow direction) */}
+      {[-1, 1].map((side) => (
+        <mesh
+          key={side}
+          position={
+            isVertical
+              ? [side * (shortAxisLen / 2 - 0.025), CONVEYOR_HEIGHT - 0.04, 0]
+              : [0, CONVEYOR_HEIGHT - 0.04, side * (shortAxisLen / 2 - 0.025)]
+          }
+          castShadow
+          receiveShadow
+        >
+          <boxGeometry args={
+            isVertical ? [0.05, 0.18, longAxisLen] : [longAxisLen, 0.18, 0.05]
+          } />
+          <meshStandardMaterial color="#1e3a8a" metalness={0.5} roughness={0.4} />
+        </mesh>
+      ))}
+      {/* Lower frame box */}
+      <mesh position={[0, CONVEYOR_HEIGHT * 0.4, 0]} castShadow receiveShadow>
+        <boxGeometry args={[w * 0.85, CONVEYOR_HEIGHT * 0.7, h * 0.85]} />
+        <meshStandardMaterial color="#1e40af" metalness={0.35} roughness={0.55} />
       </mesh>
-      {/* Belt surface */}
-      <mesh position={[0, CONVEYOR_HEIGHT + 0.005, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[w * 0.95, h * 0.95]} />
-        <meshStandardMaterial color="#1e293b" roughness={0.9} />
-      </mesh>
-      {/* Flow arrow on belt — towards the robot side */}
+      {/* Support legs at each corner */}
+      {[
+        [-w / 2 + 0.06, -h / 2 + 0.06],
+        [w / 2 - 0.06, -h / 2 + 0.06],
+        [-w / 2 + 0.06, h / 2 - 0.06],
+        [w / 2 - 0.06, h / 2 - 0.06],
+      ].map(([lx, lz], i) => (
+        <mesh
+          key={i}
+          position={[lx, (CONVEYOR_HEIGHT - 0.1) / 2, lz]}
+          castShadow
+          receiveShadow
+        >
+          <boxGeometry args={[0.06, CONVEYOR_HEIGHT - 0.1, 0.06]} />
+          <meshStandardMaterial color="#475569" metalness={0.4} roughness={0.6} />
+        </mesh>
+      ))}
+      {/* Rollers */}
+      {Array.from({ length: nRollers }).map((_, i) => {
+        const tAlong = longStart + i * rollerSpacing
+        return (
+          <mesh
+            key={i}
+            position={
+              isVertical
+                ? [0, CONVEYOR_HEIGHT - 0.005, tAlong]
+                : [tAlong, CONVEYOR_HEIGHT - 0.005, 0]
+            }
+            rotation={
+              isVertical
+                ? [0, 0, Math.PI / 2]
+                : [Math.PI / 2, 0, 0]
+            }
+            castShadow
+          >
+            <cylinderGeometry args={[rollerR, rollerR, rollerLen, 16]} />
+            <meshStandardMaterial color="#cbd5e1" metalness={0.7} roughness={0.3} />
+          </mesh>
+        )
+      })}
+      {/* Flow arrow above rollers — pointing toward the robot side */}
       <mesh
-        position={isVertical ? [0, CONVEYOR_HEIGHT + 0.01, h * 0.25] : [-w * 0.25, CONVEYOR_HEIGHT + 0.01, 0]}
+        position={isVertical ? [0, CONVEYOR_HEIGHT + 0.04, h * 0.25] : [-w * 0.25, CONVEYOR_HEIGHT + 0.04, 0]}
         rotation={[-Math.PI / 2, 0, isVertical ? 0 : -Math.PI / 2]}
       >
-        <coneGeometry args={[Math.min(w, h) * 0.2, Math.min(w, h) * 0.4, 3]} />
+        <coneGeometry args={[Math.min(w, h) * 0.18, Math.min(w, h) * 0.4, 3]} />
         <meshBasicMaterial color="#fbbf24" />
       </mesh>
     </group>
@@ -200,31 +366,89 @@ function Pallet3D({ c, spec }: { c: PlacedComponent; spec?: WorkcellSpec }) {
   const x = c.x_mm * MM_TO_M + length / 2
   const z = c.y_mm * MM_TO_M + width / 2
 
-  // Build the case stack from the spec.
   const cases = useMemo(() => buildPalletCases(c, spec), [c, spec])
+
+  // Real EUR pallet construction: 7 top planks + 3 bottom planks + 9 corner blocks.
+  // 5 top planks running along `length` axis, equally spaced across `width`.
+  const topPlankH = 0.022
+  const blockH = 0.078       // corner blocks (between top + bottom decks)
+  const bottomPlankH = 0.022
+  const N_TOP = 5
+  const plankW = width / (N_TOP + (N_TOP - 1) * 0.25) // small gap between planks
+  const gap = plankW * 0.25
+  const topY = blockH + bottomPlankH + topPlankH / 2
+  const blockY = bottomPlankH + blockH / 2
+  const bottomY = bottomPlankH / 2
+  const blockSize = Math.min(length, width) * 0.13
+  const blockOffsetsX = [-length / 2 + blockSize / 2, 0, length / 2 - blockSize / 2]
+  const blockOffsetsZ = [-width / 2 + blockSize / 2, 0, width / 2 - blockSize / 2]
 
   return (
     <group position={[x, 0, z]}>
-      {/* Pallet body */}
-      <mesh position={[0, PALLET_THICKNESS / 2, 0]} castShadow receiveShadow>
-        <boxGeometry args={[length, PALLET_THICKNESS, width]} />
-        <meshStandardMaterial color="#a16207" roughness={0.85} />
-      </mesh>
-      {/* Stacked cases */}
-      {cases.map((b, i) => (
+      {/* Top deck: 5 planks running along x */}
+      {Array.from({ length: N_TOP }).map((_, i) => {
+        const offsetZ = -width / 2 + plankW / 2 + i * (plankW + gap)
+        return (
+          <mesh
+            key={`top-${i}`}
+            position={[0, topY, offsetZ]}
+            castShadow
+            receiveShadow
+          >
+            <boxGeometry args={[length, topPlankH, plankW]} />
+            <meshStandardMaterial color="#b45309" roughness={0.85} />
+          </mesh>
+        )
+      })}
+      {/* Bottom deck: 3 planks running along x */}
+      {[-width / 2 + plankW / 2, 0, width / 2 - plankW / 2].map((zOff, i) => (
         <mesh
-          key={i}
-          position={[
-            b.cx - length / 2,
-            PALLET_THICKNESS + b.cz + b.h / 2,
-            b.cy - width / 2,
-          ]}
+          key={`bot-${i}`}
+          position={[0, bottomY, zOff]}
           castShadow
           receiveShadow
         >
-          <boxGeometry args={[b.w, b.h, b.d]} />
-          <meshStandardMaterial color={b.color} roughness={0.7} />
+          <boxGeometry args={[length, bottomPlankH, plankW]} />
+          <meshStandardMaterial color="#92400e" roughness={0.9} />
         </mesh>
+      ))}
+      {/* 9 corner blocks (3x3 grid) — RoundedBox so the wood looks worn at edges */}
+      {blockOffsetsX.map((bx, i) =>
+        blockOffsetsZ.map((bz, j) => (
+          <RoundedBox
+            key={`block-${i}-${j}`}
+            position={[bx, blockY, bz]}
+            args={[blockSize, blockH, blockSize]}
+            radius={Math.min(blockSize, blockH) * 0.08}
+            smoothness={2}
+            castShadow
+            receiveShadow
+          >
+            <meshStandardMaterial color="#78350f" roughness={0.9} />
+          </RoundedBox>
+        )),
+      )}
+      {/* Stacked cases — RoundedBox + slightly varied colour per layer for depth */}
+      {cases.map((b, i) => (
+        <RoundedBox
+          key={i}
+          position={[
+            b.cx - length / 2,
+            blockH + bottomPlankH + topPlankH + b.cz + b.h / 2,
+            b.cy - width / 2,
+          ]}
+          args={[b.w, b.h, b.d]}
+          radius={Math.min(b.w, b.h, b.d) * 0.04}
+          smoothness={2}
+          castShadow
+          receiveShadow
+        >
+          <meshStandardMaterial
+            color={b.color}
+            roughness={0.85}
+            metalness={0.0}
+          />
+        </RoundedBox>
       ))}
     </group>
   )
