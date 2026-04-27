@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.layout import LayoutProposal, ScoreBreakdown
 from app.schemas.workcell import WorkcellSpec
 from app.services.catalog import get_catalog
-from app.services.optimizer import SAOptimizer, delta_summary
+from app.services.optimizer import CPSATRefiner, SAOptimizer, delta_summary
 from app.services.scoring import score_layout
 
 router = APIRouter(prefix="/optimize", tags=["optimize"])
@@ -85,6 +85,60 @@ async def optimize(req: OptimizeRequest) -> OptimizeResponse:
 
 def _sse(event: str, data: dict[str, Any]) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n".encode("utf-8")
+
+
+class CPSATOptimizeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proposal: LayoutProposal = Field(description="Seed layout to refine.")
+    spec: WorkcellSpec = Field(description="Source workcell spec.")
+    robot_model_id: str | None = Field(default=None, description="Override robot id.")
+    time_limit_s: float = Field(default=15.0, gt=0, le=120)
+    num_workers: int = Field(default=4, ge=1, le=16)
+
+
+class CPSATOptimizeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    optimized_proposal: LayoutProposal
+    seed_score: ScoreBreakdown
+    optimized_score: ScoreBreakdown
+    delta_summary: dict[str, float]
+    solver_stats: dict[str, Any]
+
+
+@router.post("/cpsat", response_model=CPSATOptimizeResponse)
+async def optimize_cpsat(req: CPSATOptimizeRequest) -> CPSATOptimizeResponse:
+    robot_spec = None
+    catalog = get_catalog()
+    robot_id = req.robot_model_id or req.proposal.robot_model_id
+    if robot_id is not None:
+        try:
+            robot_spec = catalog.get_by_id(robot_id)
+        except Exception:
+            robot_spec = None
+
+    seed_score = score_layout(req.proposal, req.spec, robot_spec)
+    refiner = CPSATRefiner(time_limit_s=req.time_limit_s, num_workers=req.num_workers)
+    # CP-SAT solve is CPU-bound — push to a worker thread so we don't block the loop.
+    refined, stats = await asyncio.to_thread(
+        refiner.refine, req.proposal, req.spec, robot_spec
+    )
+    optimized_score = score_layout(refined, req.spec, robot_spec)
+    return CPSATOptimizeResponse(
+        optimized_proposal=refined,
+        seed_score=seed_score,
+        optimized_score=optimized_score,
+        delta_summary=delta_summary(req.proposal, seed_score, refined, optimized_score),
+        solver_stats={
+            "status": stats.status,
+            "objective": stats.objective,
+            "walltime_s": stats.walltime_s,
+            "num_branches": stats.num_branches,
+            "num_conflicts": stats.num_conflicts,
+            "feasible": stats.feasible,
+        },
+    )
 
 
 @router.post("/stream")
