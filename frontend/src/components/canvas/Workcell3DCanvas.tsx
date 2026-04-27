@@ -3,9 +3,9 @@
 // machine that walks an EOAT through pick -> transport -> place phases, and
 // renders the robot with 4-axis IK so the arm follows the EOAT.
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
-import { Grid, OrbitControls, RoundedBox } from '@react-three/drei'
+import { Grid, OrbitControls, RoundedBox, Text } from '@react-three/drei'
 import * as THREE from 'three'
 import { Pause, Play, RotateCcw } from 'lucide-react'
 
@@ -19,6 +19,7 @@ import {
   solveArmIK,
   step as stepCycle,
 } from '@/lib/cycleAnimation'
+import { RobotStaticMesh } from './RobotStaticMesh'
 
 interface Props {
   proposal: LayoutProposal | null
@@ -241,7 +242,7 @@ function AnimatedScene({
       {/* Robot — wrap in the live pose ref */}
       {robotComp && armGeom && (
         <RobotArm armGeom={armGeom} poseRef={armPoseRef} carryingRef={carryingRef} eoatRef={eoatRef}
-          baseR={baseR} reach={reach} />
+          baseR={baseR} reach={reach} modelId={proposal.robot_model_id} />
       )}
 
       {/* Conveyor with moving cases */}
@@ -329,6 +330,7 @@ function RobotArm({
   eoatRef,
   baseR,
   reach,
+  modelId,
 }: {
   armGeom: ArmGeometry
   poseRef: React.MutableRefObject<{ j1: number; elbow: THREE.Vector3; wrist: THREE.Vector3; hip: THREE.Vector3 } | null>
@@ -336,6 +338,7 @@ function RobotArm({
   eoatRef: React.MutableRefObject<THREE.Vector3>
   baseR: number
   reach: number
+  modelId?: string | null
 }) {
   const lowerRef = useRef<THREE.Mesh>(null)
   const upperRef = useRef<THREE.Mesh>(null)
@@ -386,13 +389,80 @@ function RobotArm({
     void eoatRef
   })
 
+  // Controller cabinet sits to the side of the base — rotated so it's
+  // always behind the robot relative to the active pallet (looks intentional).
+  const cabinetW = baseR * 1.1
+  const cabinetH = ROBOT_BASE_HEIGHT * 1.4
+  const cabinetD = baseR * 0.8
+  const cabinetOffset = baseR + cabinetD / 2 + 0.05
+  const labelText = modelId ?? ''
+
   return (
     <group>
+      {/* Optional GLB overlay (no-op if /public/models/<slug>.glb is missing) */}
+      <Suspense fallback={null}>
+        <RobotStaticMesh
+          modelId={modelId ?? null}
+          position={[armGeom.baseWorld.x, 0, armGeom.baseWorld.z]}
+        />
+      </Suspense>
       {/* Base column + yaw housing */}
       <mesh position={[armGeom.baseWorld.x, ROBOT_BASE_HEIGHT / 2, armGeom.baseWorld.z]} castShadow receiveShadow>
         <cylinderGeometry args={[baseR, baseR * 1.05, ROBOT_BASE_HEIGHT, 32]} />
         <meshStandardMaterial color="#1f2937" metalness={0.45} roughness={0.4} />
       </mesh>
+      {/* Yellow safety stripe around the bottom of the base */}
+      <mesh position={[armGeom.baseWorld.x, 0.06, armGeom.baseWorld.z]}>
+        <torusGeometry args={[baseR * 1.06, 0.025, 8, 32]} />
+        <meshStandardMaterial color="#fbbf24" />
+      </mesh>
+      {/* Manufacturer / model nameplate on base front */}
+      {labelText && (
+        <ModelLabel
+          position={[
+            armGeom.baseWorld.x,
+            ROBOT_BASE_HEIGHT * 0.55,
+            armGeom.baseWorld.z + baseR * 1.02,
+          ]}
+          text={labelText}
+        />
+      )}
+      {/* Controller cabinet behind the base */}
+      <group position={[armGeom.baseWorld.x, 0, armGeom.baseWorld.z - cabinetOffset]}>
+        <mesh position={[0, cabinetH / 2, 0]} castShadow receiveShadow>
+          <boxGeometry args={[cabinetW, cabinetH, cabinetD]} />
+          <meshStandardMaterial color="#334155" metalness={0.4} roughness={0.55} />
+        </mesh>
+        {/* HMI pad */}
+        <mesh position={[0, cabinetH * 0.7, cabinetD / 2 + 0.001]} castShadow>
+          <boxGeometry args={[cabinetW * 0.55, cabinetH * 0.18, 0.012]} />
+          <meshStandardMaterial color="#0f172a" emissive="#1e293b" />
+        </mesh>
+        {/* Status LED row */}
+        {[0, 1, 2].map((i) => (
+          <mesh
+            key={i}
+            position={[
+              -cabinetW * 0.25 + i * cabinetW * 0.25,
+              cabinetH * 0.35,
+              cabinetD / 2 + 0.005,
+            ]}
+          >
+            <sphereGeometry args={[0.018, 12, 12]} />
+            <meshStandardMaterial
+              color={i === 0 ? '#22c55e' : i === 1 ? '#fbbf24' : '#ef4444'}
+              emissive={i === 0 ? '#22c55e' : i === 1 ? '#fbbf24' : '#ef4444'}
+              emissiveIntensity={0.7}
+            />
+          </mesh>
+        ))}
+        {/* Cooling fan grille */}
+        <mesh position={[0, cabinetH * 0.15, cabinetD / 2 + 0.001]}>
+          <ringGeometry args={[0.05, 0.08, 16]} />
+          <meshStandardMaterial color="#0f172a" />
+        </mesh>
+      </group>
+
       <group ref={baseYawRef} position={[armGeom.baseWorld.x, ROBOT_BASE_HEIGHT, armGeom.baseWorld.z]}>
         <mesh position={[0, baseR * 0.35, 0]} rotation={[Math.PI / 2, 0, 0]} castShadow>
           <cylinderGeometry args={[baseR * 0.45, baseR * 0.45, baseR * 0.7, 24]} />
@@ -462,6 +532,34 @@ function RobotArm({
         <ringGeometry args={[reach - 0.01, reach + 0.01, 64]} />
         <meshBasicMaterial color="#94a3b8" transparent opacity={0.45} />
       </mesh>
+    </group>
+  )
+}
+
+/** Manufacturer / model nameplate decal on the robot base front. */
+function ModelLabel({
+  position,
+  text,
+}: {
+  position: [number, number, number]
+  text: string
+}) {
+  return (
+    <group position={position}>
+      <mesh>
+        <planeGeometry args={[0.42, 0.12]} />
+        <meshStandardMaterial color="#0f172a" />
+      </mesh>
+      <Text
+        position={[0, 0, 0.001]}
+        fontSize={0.045}
+        color="#f8fafc"
+        anchorX="center"
+        anchorY="middle"
+        maxWidth={0.4}
+      >
+        {text}
+      </Text>
     </group>
   )
 }

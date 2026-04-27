@@ -562,6 +562,35 @@ Top-left overlay: **▶/⏸** play/pause, **↻** reset cycle, **speed
 slider** (0.2× – 3.0×, default 0.6× so a 1.76 s cycle plays at ~3 s
 and is easy to follow).
 
+### 13g. Procedural extras (controller cabinet, model nameplate)
+The robot's procedural body now includes:
+- A **controller cabinet** behind the base (HMI pad + 3-LED status row +
+  cooling fan grille) — looks intentional, gives the scene grounding
+- A **yellow safety stripe** torus at the base's foot
+- A **manufacturer/model nameplate** decal showing the active catalog
+  robot id (e.g. "MPL80II" / "M-410iC/110") via drei `Text`
+
+### 13h. Optional GLB mesh swap-in
+**File**: [`frontend/src/lib/meshes.ts`](frontend/src/lib/meshes.ts),
+[`frontend/src/components/canvas/RobotStaticMesh.tsx`](frontend/src/components/canvas/RobotStaticMesh.tsx),
+[`frontend/public/models/README.md`](frontend/public/models/README.md)
+
+Real palletizer GLBs can be dropped into `frontend/public/models/` —
+the 3D canvas auto-loads them on top of the procedural body using a
+slug convention or an explicit `manifest.json`:
+
+```
+"M-410iC/110"  ->  /models/m_410ic_110.glb
+```
+
+`RobotStaticMesh` HEAD-probes the URL before triggering Suspense, so a
+missing file silently no-ops (no broken-image red box). The procedural
+arm continues to drive the IK animation underneath; the GLB is a
+cosmetic overlay for base/cabinet/housing detail. See
+[`public/models/README.md`](frontend/public/models/README.md) for
+filename rules, axis/units requirements, and free CC-BY / CC0 mesh
+sources.
+
 ## 14. Bundled examples (`/api/examples`)
 
 **File**: [`backend/app/api/examples.py`](backend/app/api/examples.py),
@@ -710,8 +739,9 @@ cd frontend && pnpm build                          # production bundle
 - WebSocket for collaborative multi-engineer editing
 - Robot path planning visualization (CHOMP / RRT-Connect) with
   joint-limit + self-collision checks
-- Real palletizer GLBs (e.g. Sketchfab CC-BY FANUC M-410 mesh)
-  instead of primitive composition
+- Real palletizer GLBs are now hot-swappable via
+  `frontend/public/models/<slug>.glb` (see §13h); curate a few CC-BY
+  mesh files into the demo bundle
 - Code-split the 3D bundle so the 2D-only path doesn't pay the
   three.js cost upfront
 
