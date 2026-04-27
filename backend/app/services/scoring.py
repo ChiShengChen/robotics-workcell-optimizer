@@ -427,7 +427,12 @@ def _check_overlaps(proposal: LayoutProposal) -> list[Violation]:
 def _check_obstacle_intrusion(
     proposal: LayoutProposal, spec: WorkcellSpec
 ) -> list[Violation]:
-    """Any movable body whose bbox intersects an obstacle polygon = HARD violation."""
+    """Any movable body whose bbox intersects an obstacle polygon = HARD violation.
+
+    `margin_mm` reports the penetration depth (negative) measured as the smaller
+    of the AABB-overlap dimensions, giving SA a smooth gradient to climb out
+    of the intrusion. The detection itself is exact polygon-vs-rect.
+    """
     if not spec.obstacles:
         return []
     bodies = [c for c in proposal.components if c.type not in ("fence",)]
@@ -435,15 +440,28 @@ def _check_obstacle_intrusion(
     for c in bodies:
         rect = _bbox_for(c)
         for ob in spec.obstacles:
-            if aabb_intersects_polygon(rect.x, rect.y, rect.w, rect.h, ob.polygon):
-                violations.append(
-                    Violation(
-                        kind="obstacle_intrusion", severity="hard",
-                        component_ids=[c.id, ob.id],
-                        message=f"{c.id} intersects CAD obstacle {ob.id} ({ob.source_entity}).",
-                    )
+            if not aabb_intersects_polygon(rect.x, rect.y, rect.w, rect.h, ob.polygon):
+                continue
+            # Polygon AABB.
+            xs = [p[0] for p in ob.polygon]
+            ys = [p[1] for p in ob.polygon]
+            ox, oy = min(xs), min(ys)
+            ow, oh = max(xs) - ox, max(ys) - oy
+            overlap_x = min(rect.x + rect.w, ox + ow) - max(rect.x, ox)
+            overlap_y = min(rect.y + rect.h, oy + oh) - max(rect.y, oy)
+            depth = max(0.0, min(overlap_x, overlap_y))
+            violations.append(
+                Violation(
+                    kind="obstacle_intrusion", severity="hard",
+                    component_ids=[c.id, ob.id],
+                    message=(
+                        f"{c.id} intersects CAD obstacle {ob.id} "
+                        f"({ob.source_entity}); penetration ≈ {depth:.0f} mm."
+                    ),
+                    margin_mm=-depth if depth > 0 else -1.0,
                 )
-                break
+            )
+            break
     return violations
 
 

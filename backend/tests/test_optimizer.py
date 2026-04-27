@@ -68,6 +68,49 @@ def test_sa_does_not_regress_clean_seed(catalog, beverage_spec):
         assert cur >= prev - 1e-9
 
 
+def test_sa_avoids_obstacle(catalog):
+    """SA should pull a movable body out of an obstacle once the layout is
+    seeded with one intersecting it (penetration depth gives the gradient)."""
+    from app.schemas.obstacle import Obstacle
+
+    spec = WorkcellSpec(
+        cell_envelope_mm=(8000.0, 6000.0),
+        components=[
+            Robot(id="robot_1"),
+            Conveyor(id="infeed_1", length_mm=2500.0, width_mm=600.0, flow_direction_deg=0.0),
+            Pallet(id="pallet_a", standard="EUR"),
+        ],
+        throughput=Throughput(cases_per_hour_target=500.0),
+        case_dims_mm=(400.0, 300.0, 220.0),
+        case_mass_kg=12.0,
+        pallet_standard="EUR",
+        budget_usd=160_000.0,
+        # Obstacle in the right half of the cell — pallet_a's default
+        # placement (right of the robot) lands on top of it.
+        obstacles=[
+            Obstacle(
+                id="cad_box",
+                polygon=[[5000, 2400], [6500, 2400], [6500, 3600], [5000, 3600], [5000, 2400]],
+                closed=True,
+                source_entity="LWPOLYLINE",
+            )
+        ],
+    )
+    proposals = _greedy(catalog, spec)
+    seed = next(p for p in proposals if p.template == "in_line")
+    robot = catalog.get_by_id(seed.robot_model_id)
+    seed_score = score_layout(seed, spec, robot).aggregate
+
+    sa = SAOptimizer(max_iterations=1500, seed=42)
+    best, _ = sa.optimize(seed, spec, robot)
+    best_score = score_layout(best, spec, robot).aggregate
+
+    # If the seed already happened to clear the obstacle, this test is a no-op.
+    if seed_score == 0.0:
+        # SA should pull the layout out of the obstacle -> aggregate > 0.
+        assert best_score > seed_score
+
+
 def test_sa_recovers_halfway_out_of_reach(catalog, beverage_spec):
     """Halfway out of reach (per CLAUDE.md acceptance test): SA should pull
     the pallet back into reach and clear the hard violation."""

@@ -128,6 +128,40 @@ def test_cpsat_reachability(catalog, beverage_spec):
         assert d <= eff * 1.02, f"{c.id} target at distance {d:.0f} > eff*1.02 ({eff*1.02:.0f})"
 
 
+def test_cpsat_avoids_obstacle(catalog, beverage_spec):
+    """When the spec has an obstacle, CP-SAT places bodies clear of it.
+    The obstacle's AABB is added as a fixed obstacle in add_no_overlap_2d."""
+    from app.schemas.obstacle import Obstacle
+
+    obstructed_spec = beverage_spec.model_copy(deep=True)
+    obstructed_spec.obstacles = [
+        Obstacle(
+            id="cad_block",
+            polygon=[[5000, 2400], [6500, 2400], [6500, 3600], [5000, 3600], [5000, 2400]],
+            closed=True,
+            source_entity="LWPOLYLINE",
+        )
+    ]
+    proposals = GreedyLayoutGenerator(catalog).generate(obstructed_spec, 4)
+    seed = next(p for p in proposals if p.template == "in_line")
+    robot = catalog.get_by_id(seed.robot_model_id)
+
+    refiner = CPSATRefiner(time_limit_s=10.0, num_workers=4)
+    refined, stats = refiner.refine(seed, obstructed_spec, robot)
+    assert stats.feasible, f"CP-SAT INFEASIBLE: {stats.status}"
+
+    # After refinement, every movable body's AABB must be disjoint from the
+    # obstacle's AABB.
+    obstacle_aabb = (5000, 2400, 1500, 1200)
+    for c in refined.components:
+        if c.type in ("fence", "robot"):
+            continue
+        bb = _bbox(c)
+        ox, oy, ow, oh = obstacle_aabb
+        if not (bb[0] + bb[2] <= ox or ox + ow <= bb[0] or bb[1] + bb[3] <= oy or oy + oh <= bb[1]):
+            assert False, f"{c.id} bbox {bb} still overlaps obstacle {obstacle_aabb}"
+
+
 def test_cpsat_at_least_as_compact_as_sa(catalog, beverage_spec):
     """On the same seed, CP-SAT's bbox surrogate (sum of right + top edges)
     should be no worse than SA's. CP-SAT explicitly minimises this objective;

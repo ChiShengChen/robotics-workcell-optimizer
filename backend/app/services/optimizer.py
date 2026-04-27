@@ -31,7 +31,7 @@ class SAStats:
 
 
 # Components we will perturb (keep robot + fence fixed).
-MOVABLE_TYPES: set[str] = {"conveyor", "pallet"}
+MOVABLE_TYPES: set[str] = {"conveyor", "pallet", "operator_zone"}
 
 # Perturbation params.
 SIGMA_MM = 80.0
@@ -414,7 +414,25 @@ class CPSATRefiner:
             x_intervals.append(model.new_fixed_size_interval_var(rx_const, r_w, "xi_robot"))
             y_intervals.append(model.new_fixed_size_interval_var(ry_const, r_h, "yi_robot"))
 
-        # No-overlap among non-robot bodies (plus robot footprint as obstacle).
+        # Add CAD obstacles as STATIC AABB obstacles. We use the obstacle's
+        # bounding box (conservative approximation: a 32-gon column becomes a
+        # square slightly larger than the column itself). Production would do
+        # convex decomposition for tighter bounds.
+        for ob in spec.obstacles:
+            if len(ob.polygon) < 2:
+                continue
+            xs = [p[0] for p in ob.polygon]
+            ys = [p[1] for p in ob.polygon]
+            ox = int(round(min(xs)))
+            oy = int(round(min(ys)))
+            ow = max(1, int(round(max(xs) - min(xs))))
+            oh = max(1, int(round(max(ys) - min(ys))))
+            ox_const = model.new_constant(ox)
+            oy_const = model.new_constant(oy)
+            x_intervals.append(model.new_fixed_size_interval_var(ox_const, ow, f"xi_{ob.id}"))
+            y_intervals.append(model.new_fixed_size_interval_var(oy_const, oh, f"yi_{ob.id}"))
+
+        # No-overlap among non-robot bodies (plus robot footprint + CAD obstacles).
         if x_intervals:
             model.add_no_overlap_2d(x_intervals, y_intervals)
 
