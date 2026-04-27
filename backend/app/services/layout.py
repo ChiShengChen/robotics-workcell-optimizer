@@ -344,12 +344,17 @@ class GreedyLayoutGenerator:
         return False
 
     def _fence_polyline(
-        self, robot_xy: tuple[float, float], reach_mm: float, cell_bounds: tuple[float, float],
-        has_hard_guard: bool,
+        self, robot_xy: tuple[float, float], effective_reach_mm: float,
+        cell_bounds: tuple[float, float], has_hard_guard: bool,
     ) -> list[list[float]]:
-        """Square fence offset = reach + ISO 13855 separation. Clamped to cell bounds."""
+        """Square fence offset = effective_reach + ISO 13855 separation.
+
+        We use effective reach (0.85·R_max) rather than raw reach because the
+        ISO 13855 separation is measured from the *actual* swing envelope.
+        Clamped to cell envelope so we never extrapolate beyond the floor area.
+        """
         s_safe = iso13855_safety_distance_mm(has_hard_guard)
-        margin = reach_mm + s_safe
+        margin = effective_reach_mm + s_safe
         rx, ry = robot_xy
         cw, ch = cell_bounds
         x0 = max(0.0, rx - margin)
@@ -358,18 +363,26 @@ class GreedyLayoutGenerator:
         y1 = min(ch, ry + margin)
         return [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]
 
+    def _pallet_offset_mm(self, eff_reach_mm: float, pallet_dim_mm: float) -> float:
+        """Distance from robot center to pallet's NEAR edge so the FAR edge sits
+        at 0.95 * effective_reach. This guarantees both reach feasibility AND
+        ISO 13855 clearance from a fence offset = effective_reach + S_safe.
+        """
+        target_far_edge = 0.95 * eff_reach_mm
+        return max(0.0, target_far_edge - pallet_dim_mm)
+
     # -- in_line ------------------------------------------------------------
 
     def _template_in_line(
         self, spec: WorkcellSpec, robot: RobotSpec | None
     ) -> tuple[list[PlacedComponent], str]:
         cw, ch = spec.cell_envelope_mm
-        reach = robot.reach_mm if robot else 2400.0
+        eff = robot.effective_max_reach_mm if robot else 2040.0
         rx, ry = cw / 2, ch / 2
         placed: list[PlacedComponent] = [self._make_robot_placed(spec, robot, rx, ry)]
 
-        # Infeed conveyor: 0.7·R upstream (left of robot, flowing →+x).
-        conv_distance = 0.7 * reach
+        # Infeed conveyor: 0.7·effective_reach upstream so its pick point lands inside reach.
+        conv_distance = 0.7 * eff
         conv_x = max(0.0, rx - conv_distance - DEFAULT_INFEED_LENGTH_MM)
         conv_y = ry - DEFAULT_INFEED_WIDTH_MM / 2
         placed.append(self._make_conveyor(conv_x, conv_y, DEFAULT_INFEED_LENGTH_MM, DEFAULT_INFEED_WIDTH_MM))
@@ -382,17 +395,15 @@ class GreedyLayoutGenerator:
         else:
             pallets_dims = [_pallet_dims(p, std) for p in pallets[:1]]
 
-        # Single pallet station to the right of robot, in line with infeed.
         pl, pw = pallets_dims[0]
-        pal_x = min(cw - pl, rx + 0.7 * reach)
+        pal_x = min(cw - pl, rx + self._pallet_offset_mm(eff, pl))
         pal_y = ry - pw / 2
         placed.append(self._make_pallet(1, pal_x, pal_y, pl, pw, std))
 
-        # Operator zone behind the pallet.
         placed.append(self._make_operator(min(cw - DEFAULT_OPERATOR_W_MM, pal_x),
                                           min(ch - DEFAULT_OPERATOR_D_MM, pal_y + pw + 100)))
 
-        polyline = self._fence_polyline((rx, ry), reach, (cw, ch), self._has_hard_guard(spec))
+        polyline = self._fence_polyline((rx, ry), eff, (cw, ch), self._has_hard_guard(spec))
         placed.append(self._make_fence(polyline))
 
         return placed, "Linear conveyor → robot → single pallet; minimal floor area, simplest cabling."
@@ -403,13 +414,12 @@ class GreedyLayoutGenerator:
         self, spec: WorkcellSpec, robot: RobotSpec | None
     ) -> tuple[list[PlacedComponent], str]:
         cw, ch = spec.cell_envelope_mm
-        reach = robot.reach_mm if robot else 2400.0
+        eff = robot.effective_max_reach_mm if robot else 2040.0
         rx, ry = cw * 0.4, ch * 0.5
         placed: list[PlacedComponent] = [self._make_robot_placed(spec, robot, rx, ry)]
 
-        # Infeed from below (flow +y).
         conv_x = rx - DEFAULT_INFEED_WIDTH_MM / 2
-        conv_y = max(0.0, ry - 0.7 * reach - DEFAULT_INFEED_LENGTH_MM)
+        conv_y = max(0.0, ry - 0.7 * eff - DEFAULT_INFEED_LENGTH_MM)
         placed.append(self._make_conveyor(conv_x, conv_y, DEFAULT_INFEED_LENGTH_MM,
                                           DEFAULT_INFEED_WIDTH_MM, yaw_deg=90.0))
 
@@ -419,14 +429,14 @@ class GreedyLayoutGenerator:
             pl, pw = PALLET_FOOTPRINTS_MM.get(std or "EUR", PALLET_FOOTPRINTS_MM["EUR"])
         else:
             pl, pw = _pallet_dims(pallets[0], std)
-        pal_x = min(cw - pl, rx + 0.7 * reach)
+        pal_x = min(cw - pl, rx + self._pallet_offset_mm(eff, pl))
         pal_y = ry - pw / 2
         placed.append(self._make_pallet(1, pal_x, pal_y, pl, pw, std))
 
         placed.append(self._make_operator(min(cw - DEFAULT_OPERATOR_W_MM, pal_x),
                                           min(ch - DEFAULT_OPERATOR_D_MM, pal_y + pw + 100)))
 
-        polyline = self._fence_polyline((rx, ry), reach, (cw, ch), self._has_hard_guard(spec))
+        polyline = self._fence_polyline((rx, ry), eff, (cw, ch), self._has_hard_guard(spec))
         placed.append(self._make_fence(polyline))
 
         return placed, ("L-shaped: infeed perpendicular to outfeed pallet, "
@@ -438,13 +448,12 @@ class GreedyLayoutGenerator:
         self, spec: WorkcellSpec, robot: RobotSpec | None
     ) -> tuple[list[PlacedComponent], str]:
         cw, ch = spec.cell_envelope_mm
-        reach = robot.reach_mm if robot else 2400.0
+        eff = robot.effective_max_reach_mm if robot else 2040.0
         rx, ry = cw / 2, ch * 0.45
         placed: list[PlacedComponent] = [self._make_robot_placed(spec, robot, rx, ry)]
 
-        # Infeed from below (flow +y).
         conv_x = rx - DEFAULT_INFEED_WIDTH_MM / 2
-        conv_y = max(0.0, ry - 0.7 * reach - DEFAULT_INFEED_LENGTH_MM)
+        conv_y = max(0.0, ry - 0.7 * eff - DEFAULT_INFEED_LENGTH_MM)
         placed.append(self._make_conveyor(conv_x, conv_y, DEFAULT_INFEED_LENGTH_MM,
                                           DEFAULT_INFEED_WIDTH_MM, yaw_deg=90.0))
 
@@ -456,18 +465,18 @@ class GreedyLayoutGenerator:
         else:
             dims_list = [_pallet_dims(p, std) for p in pallets[:2]]
 
-        # Two pallets flanking the robot east + west, infeed from south.
         (pl_l, pw_l), (pl_r, pw_r) = dims_list
-        left_x = max(0.0, rx - 0.7 * reach - pl_l)
-        right_x = min(cw - pl_r, rx + 0.7 * reach)
+        left_offset = self._pallet_offset_mm(eff, pl_l)
+        right_offset = self._pallet_offset_mm(eff, pl_r)
+        left_x = max(0.0, rx - left_offset - pl_l)
+        right_x = min(cw - pl_r, rx + right_offset)
         placed.append(self._make_pallet(1, left_x, ry - pw_l / 2, pl_l, pw_l, std))
         placed.append(self._make_pallet(2, right_x, ry - pw_r / 2, pl_r, pw_r, std))
 
-        # Operator zone to the north (open side).
         placed.append(self._make_operator(rx - DEFAULT_OPERATOR_W_MM / 2,
-                                          min(ch - DEFAULT_OPERATOR_D_MM, ry + 0.7 * reach + 100)))
+                                          min(ch - DEFAULT_OPERATOR_D_MM, ry + 0.7 * eff + 100)))
 
-        polyline = self._fence_polyline((rx, ry), reach, (cw, ch), self._has_hard_guard(spec))
+        polyline = self._fence_polyline((rx, ry), eff, (cw, ch), self._has_hard_guard(spec))
         placed.append(self._make_fence(polyline))
 
         return placed, ("U-shaped: pallets flank the robot east+west, infeed from south, "
@@ -479,13 +488,12 @@ class GreedyLayoutGenerator:
         self, spec: WorkcellSpec, robot: RobotSpec | None
     ) -> tuple[list[PlacedComponent], str]:
         cw, ch = spec.cell_envelope_mm
-        reach = robot.reach_mm if robot else 2400.0
+        eff = robot.effective_max_reach_mm if robot else 2040.0
         rx, ry = cw / 2, ch / 2
         placed: list[PlacedComponent] = [self._make_robot_placed(spec, robot, rx, ry)]
 
-        # Infeed from south (flow +y).
         conv_x = rx - DEFAULT_INFEED_WIDTH_MM / 2
-        conv_y = max(0.0, ry - 0.7 * reach - DEFAULT_INFEED_LENGTH_MM)
+        conv_y = max(0.0, ry - 0.7 * eff - DEFAULT_INFEED_LENGTH_MM)
         placed.append(self._make_conveyor(conv_x, conv_y, DEFAULT_INFEED_LENGTH_MM,
                                           DEFAULT_INFEED_WIDTH_MM, yaw_deg=90.0))
 
@@ -497,18 +505,18 @@ class GreedyLayoutGenerator:
         else:
             dims_list = [_pallet_dims(p, std) for p in pallets[:2]]
 
-        # Two pallets on opposite sides (east + west) for swap-and-continue operation.
         (pl_l, pw_l), (pl_r, pw_r) = dims_list
-        left_x = max(0.0, rx - 0.7 * reach - pl_l)
-        right_x = min(cw - pl_r, rx + 0.7 * reach)
+        left_offset = self._pallet_offset_mm(eff, pl_l)
+        right_offset = self._pallet_offset_mm(eff, pl_r)
+        left_x = max(0.0, rx - left_offset - pl_l)
+        right_x = min(cw - pl_r, rx + right_offset)
         placed.append(self._make_pallet(1, left_x, ry - pw_l / 2, pl_l, pw_l, std))
         placed.append(self._make_pallet(2, right_x, ry - pw_r / 2, pl_r, pw_r, std))
 
-        # Operator zone north — same as U_shape but rationale differs.
         placed.append(self._make_operator(rx - DEFAULT_OPERATOR_W_MM / 2,
-                                          min(ch - DEFAULT_OPERATOR_D_MM, ry + 0.7 * reach + 100)))
+                                          min(ch - DEFAULT_OPERATOR_D_MM, ry + 0.7 * eff + 100)))
 
-        polyline = self._fence_polyline((rx, ry), reach, (cw, ch), self._has_hard_guard(spec))
+        polyline = self._fence_polyline((rx, ry), eff, (cw, ch), self._has_hard_guard(spec))
         placed.append(self._make_fence(polyline))
 
         return placed, ("Dual-pallet swap stations: continuous operation while operator "
