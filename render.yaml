@@ -19,15 +19,17 @@ services:
     branch: main
     autoDeploy: true          # redeploy on every push to main
 
-    buildCommand: pip install -e .
+    buildCommand: pip install --upgrade pip && pip install -e .
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
 
     healthCheckPath: /api/health
 
     envVars:
-      # Pin Python so ortools wheel resolves against the same major.minor.
+      # Pin Python to 3.12 — ortools always ships a wheel for it; 3.13 wheels
+      # sometimes lag and Render's runtime list doesn't always include the
+      # latest patch. 3.12 is the safe bet.
       - key: PYTHON_VERSION
-        value: "3.13.7"
+        value: "3.12.7"
 
       # LLM provider keys — set the actual values in the Render dashboard
       # under Environment Variables. sync:false marks them as secrets so
