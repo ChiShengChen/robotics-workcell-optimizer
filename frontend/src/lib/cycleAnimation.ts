@@ -38,6 +38,11 @@ export interface CycleConfig {
   homePoint: THREE.Vector3   // EOAT idle position above robot
   hoverHeight: number        // how high above pick/place to hover during transport
   caseHeight: number         // case stack height per case (m); used to lift the place point as cases stack
+  // Cap on cases per pallet — when reached, the count wraps to 0 to simulate
+  // the full pallet being rolled out and replaced. Without this the place
+  // height climbs forever and the renderer caps visible cases, making the
+  // demo look like it "stopped generating".
+  maxPerPallet?: Record<string, number>
 }
 
 export interface CycleState {
@@ -119,7 +124,9 @@ export function step(state: CycleState, cfg: CycleConfig, dtSimSeconds: number):
     if (phase === 'descend_place') {
       carrying = false
       placedPerPallet = { ...placedPerPallet }
-      placedPerPallet[placeTarget.palletId] = (placedPerPallet[placeTarget.palletId] ?? 0) + 1
+      const next = (placedPerPallet[placeTarget.palletId] ?? 0) + 1
+      const cap = cfg.maxPerPallet?.[placeTarget.palletId]
+      placedPerPallet[placeTarget.palletId] = cap && next >= cap ? 0 : next
     }
     if (phase === 'lift_after_place') {
       // End of cycle — switch to next pallet for round-robin dual-pallet.

@@ -446,6 +446,13 @@ function buildCycleConfigForRobot(
     robot.y_mm * MM_TO_M,
   )
 
+  // Cap each pallet at its rendered case capacity so the cycle wraps when
+  // full instead of stacking forever (which would leave the renderer stuck).
+  const maxPerPallet: Record<string, number> = {}
+  for (const p of pallets) {
+    maxPerPallet[p.id] = palletCapacity(p, spec)
+  }
+
   const cycleSeconds = Math.max(1.0, proposal.estimated_cycle_time_s)
   return {
     cycleSeconds,
@@ -454,7 +461,33 @@ function buildCycleConfigForRobot(
     homePoint,
     hoverHeight: 0.6,
     caseHeight: caseH,
+    maxPerPallet,
   }
+}
+
+function palletCapacity(p: PlacedComponent, spec: WorkcellSpec): number {
+  const palletStandard =
+    (p.dims.standard as string | undefined) ?? spec.pallet_standard ?? 'EUR'
+  const palletDims: PalletDims =
+    palletStandard === 'GMA'
+      ? { length_mm: 1219, width_mm: 1016 }
+      : palletStandard === 'half'
+        ? { length_mm: 800, width_mm: 600 }
+        : palletStandard === 'ISO1'
+          ? { length_mm: 1200, width_mm: 1000 }
+          : { length_mm: 1200, width_mm: 800 }
+  const cas: CaseDims = spec.case_dims_mm
+    ? {
+        length_mm: spec.case_dims_mm[0],
+        width_mm: spec.case_dims_mm[1],
+        height_mm: spec.case_dims_mm[2],
+      }
+    : { length_mm: 400, width_mm: 300, height_mm: 220 }
+  const maxStack = spec.max_stack_height_mm ?? 1500
+  const nLayers = Math.max(1, Math.min(8, Math.floor(maxStack / cas.height_mm)))
+  const pattern =
+    (p.dims.pattern as 'column' | 'interlock' | 'pinwheel' | undefined) ?? 'interlock'
+  return buildStack(palletDims, cas, pattern, nLayers).total
 }
 
 
