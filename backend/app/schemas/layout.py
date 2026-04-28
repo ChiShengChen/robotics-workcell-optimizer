@@ -40,7 +40,8 @@ class LayoutProposal(BaseModel):
 
     proposal_id: str = Field(description="Unique id for this proposal.")
     template: Literal[
-        "in_line", "L_shape", "U_shape", "dual_pallet", "dual_arm_dual_pallet"
+        "in_line", "L_shape", "U_shape", "dual_pallet",
+        "dual_arm_dual_pallet", "triple_arm_tandem", "quad_arm_dual_line",
     ] = Field(description="Topology template used to seed this proposal.")
     robot_model_id: str | None = Field(
         description="Primary robot's RobotSpec.model; null if no feasible robot was found."

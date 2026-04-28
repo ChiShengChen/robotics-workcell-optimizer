@@ -6,6 +6,8 @@
 export type PromptCategory =
   | 'Single-arm'
   | 'Dual-arm (high throughput)'
+  | 'Triple-arm tandem (very high throughput)'
+  | 'Quad-arm dual-line (extreme throughput)'
   | '6-axis mixed orientation'
   | 'Continuous operation'
   | 'Edge cases (LLM discipline)'
@@ -100,6 +102,48 @@ export const PROMPT_LIBRARY: PromptLibraryEntry[] = [
     cph: 3500,
     prompt:
       "Canned food line. Trays of 24 cans, 400 x 300 x 130 mm at 14 kg. Target 3500 cases per hour for export demand surge. Cell envelope 12 m by 8 m. EUR pallets. Budget 280k USD.",
+  },
+
+  // ===== Triple-arm =====
+  {
+    id: 'tandem_4000',
+    category: 'Triple-arm tandem (very high throughput)',
+    title: 'Coca-Cola style tandem (4000 cph)',
+    description: 'Triggers triple_arm_tandem first. 3 robots along one long axis, system UPH ≈ 3 × single-arm. Cell needs ≥ ~16 m wide.',
+    cph: 4000,
+    badge: 'recommended',
+    prompt:
+      "Tandem palletizing line for canned beverages. Each tray 400 x 300 x 220 mm at 12 kg. Target 4000 cases per hour. Cell envelope 18 m by 8 m. EUR pallets, interlock pattern. Budget 500k USD bare arms.",
+  },
+  {
+    id: 'tandem_4500_export',
+    category: 'Triple-arm tandem (very high throughput)',
+    title: 'Export bottling line (4500 cph)',
+    description: '3 arms in series feeding off one continuous infeed conveyor.',
+    cph: 4500,
+    prompt:
+      "Continuous bottling line palletizing — packs of 24 bottles in 350 x 250 x 280 mm trays at 14 kg. 4500 cases per hour, 24/7 operation. Cell footprint 17 m by 9 m. EUR pallets. Budget 550k USD.",
+  },
+
+  // ===== Quad-arm =====
+  {
+    id: 'quad_6000_beverage',
+    category: 'Quad-arm dual-line (extreme throughput)',
+    title: 'Mega beverage line (6000 cph)',
+    description: 'Triggers quad_arm_dual_line first. 4 robots in 2×2 grid, two parallel infeed lines, system UPH ≈ 4 × single-arm.',
+    cph: 6000,
+    badge: 'recommended',
+    prompt:
+      "Mega-throughput beverage palletizing — two parallel infeed lines. Cases 400 x 300 x 220 mm at 12 kg. Combined target 6000 cases per hour. Cell envelope 15 m by 12 m. EUR pallets, interlock. Budget 700k USD bare arms.",
+  },
+  {
+    id: 'quad_7500_canned',
+    category: 'Quad-arm dual-line (extreme throughput)',
+    title: 'Mass canning line (7500 cph)',
+    description: 'Above quad-arm threshold; even with 4 arms throughput sub-score may not saturate — see relax assumptions.',
+    cph: 7500,
+    prompt:
+      "Mass canning line — trays of 24 cans, 400 x 300 x 130 mm at 14 kg. Combined target 7500 cases per hour across two parallel infeeds. Cell envelope 16 m by 13 m. EUR pallets. Budget 800k USD.",
   },
 
   // ===== 6-axis =====

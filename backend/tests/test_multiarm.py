@@ -98,6 +98,91 @@ def test_score_dual_arm_per_robot_reach(catalog, high_throughput_spec):
     assert sb.reach_margin > 0.0  # no hard reach violations
 
 
+@pytest.fixture
+def very_high_throughput_spec() -> WorkcellSpec:
+    """cph 4000 + roomy cell -> triple_arm_tandem should be biased first."""
+    return WorkcellSpec(
+        cell_envelope_mm=(18000.0, 8000.0),
+        components=[Robot(id="robot_1"),
+                    Conveyor(id="i", length_mm=2500, width_mm=600, flow_direction_deg=0)],
+        throughput=Throughput(cases_per_hour_target=4000),
+        case_dims_mm=(400, 300, 220), case_mass_kg=12, pallet_standard="EUR",
+        budget_usd=500_000,
+    )
+
+
+@pytest.fixture
+def extreme_throughput_spec() -> WorkcellSpec:
+    """cph 6000 + roomy 2x2 cell -> quad_arm_dual_line should be biased first."""
+    return WorkcellSpec(
+        cell_envelope_mm=(15000.0, 12000.0),
+        components=[Robot(id="robot_1"),
+                    Conveyor(id="i", length_mm=2500, width_mm=600, flow_direction_deg=0)],
+        throughput=Throughput(cases_per_hour_target=6000),
+        case_dims_mm=(400, 300, 220), case_mass_kg=12, pallet_standard="EUR",
+        budget_usd=700_000,
+    )
+
+
+def test_greedy_includes_triple_arm_at_cph_3500_plus(catalog, very_high_throughput_spec):
+    proposals = GreedyLayoutGenerator(catalog).generate(very_high_throughput_spec, n_variants=4)
+    templates = [p.template for p in proposals]
+    assert "triple_arm_tandem" in templates
+
+
+def test_greedy_includes_quad_arm_at_cph_5000_plus(catalog, extreme_throughput_spec):
+    proposals = GreedyLayoutGenerator(catalog).generate(extreme_throughput_spec, n_variants=4)
+    templates = [p.template for p in proposals]
+    assert "quad_arm_dual_line" in templates
+
+
+def test_triple_arm_has_three_robots_and_no_hard_violations(catalog, very_high_throughput_spec):
+    proposals = GreedyLayoutGenerator(catalog).generate(very_high_throughput_spec, 4)
+    triple = next((p for p in proposals if p.template == "triple_arm_tandem"), None)
+    assert triple is not None
+    robots = [c for c in triple.components if c.type == "robot"]
+    assert len(robots) == 3
+    # Each robot in task_assignment owns 1 pallet + 1 conveyor.
+    for rid in ("robot_1", "robot_2", "robot_3"):
+        assert rid in triple.task_assignment
+        assigned = triple.task_assignment[rid]
+        assert any(a.startswith("pallet") for a in assigned)
+        assert any(a.startswith("conveyor") for a in assigned)
+    # Greedy seed should be feasible (no hard violations).
+    if triple.robot_model_id is not None:
+        rspecs = [catalog.get_by_id(r) for r in triple.robot_model_ids]
+        sb = score_layout(triple, very_high_throughput_spec, rspecs)
+        hard = [v for v in sb.violations if v.severity == "hard"]
+        assert hard == [], f"triple seed has hard violations: {hard}"
+
+
+def test_quad_arm_has_four_robots_and_no_hard_violations(catalog, extreme_throughput_spec):
+    proposals = GreedyLayoutGenerator(catalog).generate(extreme_throughput_spec, 4)
+    quad = next((p for p in proposals if p.template == "quad_arm_dual_line"), None)
+    assert quad is not None
+    robots = [c for c in quad.components if c.type == "robot"]
+    assert len(robots) == 4
+    for rid in ("robot_1", "robot_2", "robot_3", "robot_4"):
+        assert rid in quad.task_assignment
+    if quad.robot_model_id is not None:
+        rspecs = [catalog.get_by_id(r) for r in quad.robot_model_ids]
+        sb = score_layout(quad, extreme_throughput_spec, rspecs)
+        hard = [v for v in sb.violations if v.severity == "hard"]
+        assert hard == [], f"quad seed has hard violations: {hard}"
+
+
+def test_system_uph_scales_with_arm_count(catalog, very_high_throughput_spec, extreme_throughput_spec):
+    """System UPH should roughly scale linearly: 1 < 2 < 3 < 4 arms."""
+    triple_props = GreedyLayoutGenerator(catalog).generate(very_high_throughput_spec, 4)
+    quad_props = GreedyLayoutGenerator(catalog).generate(extreme_throughput_spec, 4)
+    triple = next(p for p in triple_props if p.template == "triple_arm_tandem")
+    quad = next(p for p in quad_props if p.template == "quad_arm_dual_line")
+    if triple.robot_model_id is None or quad.robot_model_id is None:
+        pytest.skip("greedy didn't pick a robot")
+    # 4 arms should produce more system UPH than 3 arms (same robot model).
+    assert quad.estimated_uph > triple.estimated_uph * 1.2
+
+
 def test_score_layout_accepts_single_robotspec_for_compat(catalog):
     """Backward compat: passing a single RobotSpec (not a list) still works."""
     spec = WorkcellSpec(

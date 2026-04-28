@@ -18,7 +18,20 @@ from app.schemas.robot import IdealUseCase, RobotSpec
 from app.schemas.workcell import Pallet, Robot, WorkcellSpec
 from app.services.catalog import RobotCatalogService
 
-Template = Literal["in_line", "L_shape", "U_shape", "dual_pallet", "dual_arm_dual_pallet"]
+Template = Literal[
+    "in_line", "L_shape", "U_shape", "dual_pallet",
+    "dual_arm_dual_pallet", "triple_arm_tandem", "quad_arm_dual_line",
+]
+
+_ARMS_PER_TEMPLATE: dict[str, int] = {
+    "in_line": 1,
+    "L_shape": 1,
+    "U_shape": 1,
+    "dual_pallet": 1,
+    "dual_arm_dual_pallet": 2,
+    "triple_arm_tandem": 3,
+    "quad_arm_dual_line": 4,
+}
 
 # Pallet footprints (mm) for known standards.
 PALLET_FOOTPRINTS_MM: dict[str, tuple[float, float]] = {
@@ -125,19 +138,29 @@ class GreedyLayoutGenerator:
     def generate(self, spec: WorkcellSpec, n_variants: int = 3) -> list[LayoutProposal]:
         templates: list[Template] = ["in_line", "L_shape", "U_shape", "dual_pallet"]
         is_continuous = self._is_continuous_op(spec)
-        is_high_throughput = spec.throughput.cases_per_hour_target >= 1500
-        # Bias dual_pallet first for continuous ops; bias dual_arm first for very
-        # high throughput where a single robot can't keep up.
-        if is_high_throughput:
-            templates = ["dual_arm_dual_pallet", "dual_pallet", "L_shape", "in_line"]
+        cph = spec.throughput.cases_per_hour_target
+        # Bias multi-arm templates by throughput. Thresholds match the README §17:
+        #   ≥ 5000 cph → quad-arm 2x2 lines
+        #   ≥ 3500 cph → triple-arm tandem
+        #   ≥ 1500 cph → dual-arm
+        if cph >= 5000:
+            templates = ["quad_arm_dual_line", "triple_arm_tandem",
+                         "dual_arm_dual_pallet", "dual_pallet"]
+        elif cph >= 3500:
+            templates = ["triple_arm_tandem", "dual_arm_dual_pallet",
+                         "quad_arm_dual_line", "dual_pallet"]
+        elif cph >= 1500:
+            templates = ["dual_arm_dual_pallet", "dual_pallet",
+                         "L_shape", "in_line"]
         elif is_continuous:
-            templates = ["dual_pallet", "dual_arm_dual_pallet", "L_shape", "in_line", "U_shape"]
+            templates = ["dual_pallet", "dual_arm_dual_pallet",
+                         "L_shape", "in_line", "U_shape"]
         proposals: list[LayoutProposal] = []
         seen_keys: set[str] = set()
         for tpl in templates:
             if len(proposals) >= n_variants:
                 break
-            n_arms = 2 if tpl == "dual_arm_dual_pallet" else 1
+            n_arms = _ARMS_PER_TEMPLATE.get(tpl, 1)
             robot, robot_assumption = self._pick_robot(
                 spec,
                 dual_pallet=(tpl == "dual_pallet"),
@@ -261,6 +284,10 @@ class GreedyLayoutGenerator:
             placed, rationale = self._template_u_shape(spec, robot)
         elif template == "dual_arm_dual_pallet":
             placed, rationale, task_assignment = self._template_dual_arm_dual_pallet(spec, robot)
+        elif template == "triple_arm_tandem":
+            placed, rationale, task_assignment = self._template_triple_arm_tandem(spec, robot)
+        elif template == "quad_arm_dual_line":
+            placed, rationale, task_assignment = self._template_quad_arm_dual_line(spec, robot)
         else:
             placed, rationale = self._template_dual_pallet(spec, robot)
 
@@ -646,5 +673,182 @@ class GreedyLayoutGenerator:
             "Dual-arm dual-pallet: two robots flank a central infeed conveyor; "
             "each robot exclusively serves its outboard pallet. System UPH ≈ 2× "
             "single-arm. No motion coordination needed (no shared workspace)."
+        )
+        return placed, rationale, task_assignment
+
+    # -- triple_arm_tandem -----------------------------------------------
+
+    def _template_triple_arm_tandem(
+        self, spec: WorkcellSpec, robot: RobotSpec | None
+    ) -> tuple[list[PlacedComponent], str, dict[str, list[str]]]:
+        """Three robots in a row along the cell's long axis. Each robot has
+        its own infeed-conveyor segment (all three segments visually align
+        as one long conveyor) and its own outboard pallet to the north.
+        System UPH ≈ 3 × single-arm. No motion coordination — robots have
+        disjoint workspaces.
+        """
+        cw, ch = spec.cell_envelope_mm
+        eff = robot.effective_max_reach_mm if robot else 2040.0
+
+        # Place 3 robots at 1/6, 3/6, 5/6 of cell width.
+        rxs = [cw * 1 / 6, cw * 3 / 6, cw * 5 / 6]
+        ry = ch * 0.45
+
+        placed: list[PlacedComponent] = []
+        for i, rx in enumerate(rxs, start=1):
+            placed.append(
+                self._make_robot_placed(spec, robot, rx, ry, robot_id=f"robot_{i}")
+            )
+
+        # Each robot gets its own infeed conveyor segment to the south.
+        # Pick distance: 0.7 * eff (matches single-arm conventions).
+        seg_len = min(DEFAULT_INFEED_LENGTH_MM, max(800.0, 0.5 * eff))
+        conv_y = max(0.0, ry - 0.7 * eff - seg_len)
+        for i, rx in enumerate(rxs, start=1):
+            cx = rx - DEFAULT_INFEED_WIDTH_MM / 2
+            conv = self._make_conveyor(
+                cx, conv_y, seg_len, DEFAULT_INFEED_WIDTH_MM, yaw_deg=90.0,
+            )
+            placed.append(conv.model_copy(update={"id": f"conveyor_{i}"}))
+
+        # Each robot owns one pallet to the NORTH (so the robot rotates 180°
+        # between south pick and north place — classic palletizing motion).
+        std = spec.pallet_standard
+        pallets_in_spec = self._pallet_components(spec)
+        if pallets_in_spec:
+            base_dims = _pallet_dims(pallets_in_spec[0], std)
+        else:
+            base_dims = PALLET_FOOTPRINTS_MM.get(std or "EUR", PALLET_FOOTPRINTS_MM["EUR"])
+        pl, pw = base_dims
+        # Pallet center sits at 0.92 * eff north of robot.
+        pal_y_center = ry + 0.92 * eff
+        pal_y = min(ch - pw, pal_y_center - pw / 2)
+        for i, rx in enumerate(rxs, start=1):
+            placed.append(self._make_pallet(i, rx - pl / 2, pal_y, pl, pw, std))
+
+        # One operator zone tucked in the NW corner so it doesn't fight the
+        # pallets for the north strip.
+        op_x = max(0.0, rxs[0] - DEFAULT_OPERATOR_W_MM / 2)
+        op_y = min(ch - DEFAULT_OPERATOR_D_MM, max(0.0, ry - DEFAULT_OPERATOR_D_MM - 100))
+        placed.append(self._make_operator(op_x, op_y))
+
+        # Fence wraps all three reach envelopes AND the pallet row (which
+        # extends north of the robots). Plus s_safe margin from pallets.
+        s_safe = iso13855_safety_distance_mm(self._has_hard_guard(spec))
+        margin = eff + s_safe
+        x0 = max(0.0, rxs[0] - margin)
+        y0 = max(0.0, ry - margin)
+        x1 = min(cw, rxs[-1] + margin)
+        # Pallet north edge + S_safe to avoid fence-clearance violation.
+        pal_north = pal_y + pw + s_safe
+        y1 = min(ch, max(ry + margin, pal_north))
+        polyline = [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]
+        placed.append(self._make_fence(polyline))
+
+        task_assignment = {
+            f"robot_{i}": [f"pallet_{i}", f"conveyor_{i}"]
+            for i in range(1, 4)
+        }
+        rationale = (
+            "Triple-arm tandem: three robots aligned along the long axis, "
+            "each with its own infeed-conveyor segment + outboard pallet. "
+            "System UPH ≈ 3× single-arm. Common in food / beverage tandem "
+            "lines (Coca-Cola style). No motion coordination — disjoint "
+            "workspaces."
+        )
+        return placed, rationale, task_assignment
+
+    # -- quad_arm_dual_line ----------------------------------------------
+
+    def _template_quad_arm_dual_line(
+        self, spec: WorkcellSpec, robot: RobotSpec | None
+    ) -> tuple[list[PlacedComponent], str, dict[str, list[str]]]:
+        """Two parallel infeed lines stacked north / south, each with two
+        robots flanking a centre conveyor segment. 4 robots, 4 conveyors,
+        4 pallets. System UPH ≈ 4 × single-arm. The most common
+        very-high-throughput configuration in real production palletizing.
+        """
+        cw, ch = spec.cell_envelope_mm
+        eff = robot.effective_max_reach_mm if robot else 2040.0
+
+        # 4 robots in a 2×2 grid: 2 columns (x positions), 2 rows (y positions).
+        rx_left = cw * 0.30
+        rx_right = cw * 0.70
+        ry_south = ch * 0.30
+        ry_north = ch * 0.70
+
+        placed: list[PlacedComponent] = []
+        # robot_1 SW, robot_2 SE, robot_3 NW, robot_4 NE
+        coords = [
+            (rx_left, ry_south, "robot_1"),
+            (rx_right, ry_south, "robot_2"),
+            (rx_left, ry_north, "robot_3"),
+            (rx_right, ry_north, "robot_4"),
+        ]
+        for x, y, rid in coords:
+            placed.append(self._make_robot_placed(spec, robot, x, y, robot_id=rid))
+
+        # Two infeed conveyors running EAST-WEST through each row, between
+        # the row's two robots. Each conveyor has TWO pick zones (one for
+        # each flanking robot) — represented by splitting into two
+        # PlacedComponents per row so per-robot task_assignment works.
+        seg_len = min(DEFAULT_INFEED_LENGTH_MM, max(800.0, 0.5 * eff))
+        # All four conveyors enter from the south of their robot, so the
+        # pick end (top of the vertical belt) sits at 0.7 * eff below the
+        # robot. Visually this creates two parallel infeed lines at
+        # different y-rows — south row conveyors near the bottom of the
+        # cell, north row conveyors midway between the two robot rows.
+        for idx, (rx, ry, _rid) in enumerate(coords):
+            cx = rx - DEFAULT_INFEED_WIDTH_MM / 2
+            cy = max(0.0, ry - 0.7 * eff - seg_len)
+            conv = self._make_conveyor(
+                cx, cy, seg_len, DEFAULT_INFEED_WIDTH_MM, yaw_deg=90.0,
+            )
+            placed.append(conv.model_copy(update={"id": f"conveyor_{idx + 1}"}))
+
+        # Pallets outboard of each robot (W of left robots, E of right robots).
+        std = spec.pallet_standard
+        pallets_in_spec = self._pallet_components(spec)
+        if pallets_in_spec:
+            base_dims = _pallet_dims(pallets_in_spec[0], std)
+        else:
+            base_dims = PALLET_FOOTPRINTS_MM.get(std or "EUR", PALLET_FOOTPRINTS_MM["EUR"])
+        pl, pw = base_dims
+        offset = self._pallet_offset_mm(eff, pl)
+        for idx, (rx, ry, _rid) in enumerate(coords):
+            is_west = idx % 2 == 0     # robot_1 + robot_3 are west columns
+            if is_west:
+                pal_x = max(0.0, rx - offset - pl)
+            else:
+                pal_x = min(cw - pl, rx + offset)
+            pal_y = ry - pw / 2
+            placed.append(self._make_pallet(idx + 1, pal_x, pal_y, pl, pw, std))
+
+        # Single operator zone in the dead center between the two lines.
+        op_x = (rx_left + rx_right) / 2 - DEFAULT_OPERATOR_W_MM / 2
+        op_y = (ry_south + ry_north) / 2 - DEFAULT_OPERATOR_D_MM / 2
+        placed.append(self._make_operator(op_x, op_y))
+
+        # Fence wraps all 4 reach envelopes; conveyors extend further
+        # north / south than the robots so we widen the y range.
+        s_safe = iso13855_safety_distance_mm(self._has_hard_guard(spec))
+        margin = eff + s_safe
+        x0 = max(0.0, rx_left - margin)
+        y0 = max(0.0, ry_south - margin)
+        x1 = min(cw, rx_right + margin)
+        y1 = min(ch, ry_north + margin)
+        polyline = [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]
+        placed.append(self._make_fence(polyline))
+
+        task_assignment = {
+            f"robot_{i}": [f"pallet_{i}", f"conveyor_{i}"]
+            for i in range(1, 5)
+        }
+        rationale = (
+            "Quad-arm dual-line: two parallel infeed lines, each with two "
+            "robots in a 2×2 grid. 4 conveyors, 4 pallets, 4 robots. "
+            "System UPH ≈ 4× single-arm. Standard configuration for "
+            "very-high-throughput beverage / canned goods lines. Disjoint "
+            "workspaces — no motion coordination."
         )
         return placed, rationale, task_assignment

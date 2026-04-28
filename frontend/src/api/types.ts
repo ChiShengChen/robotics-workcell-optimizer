@@ -14,6 +14,8 @@ export type LayoutTemplate =
   | 'U_shape'
   | 'dual_pallet'
   | 'dual_arm_dual_pallet'
+  | 'triple_arm_tandem'
+  | 'quad_arm_dual_line'
 export type PlacedType = 'robot' | 'conveyor' | 'pallet' | 'fence' | 'operator_zone'
 export type ConstraintKind =
   | 'min_clearance'
