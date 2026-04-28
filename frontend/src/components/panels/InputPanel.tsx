@@ -299,25 +299,11 @@ export function InputPanel() {
           rows={9}
           className="resize-y text-xs"
         />
-        <div className="flex gap-2">
-          <Button
-            onClick={() => void runExtract()}
-            disabled={isExtracting || prompt.trim().length === 0}
-            className="flex-1"
-            size="sm"
-          >
-            {isExtracting ? (
-              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Wand2 className="mr-1 h-3.5 w-3.5" />
-            )}
-            Extract Spec
-          </Button>
+        <div className="flex flex-col gap-2">
           <Button
             onClick={() => void runGenerate()}
             disabled={isGenerating || !spec}
-            variant="secondary"
-            className="flex-1"
+            className="w-full"
             size="sm"
           >
             {isGenerating ? (
@@ -326,6 +312,20 @@ export function InputPanel() {
               <Workflow className="mr-1 h-3.5 w-3.5" />
             )}
             Generate Layout
+          </Button>
+          <Button
+            onClick={() => void runExtract()}
+            disabled={isExtracting || prompt.trim().length === 0}
+            variant="outline"
+            className="w-full"
+            size="sm"
+          >
+            {isExtracting ? (
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Wand2 className="mr-1 h-3.5 w-3.5" />
+            )}
+            Extract Spec
           </Button>
         </div>
       </CardContent>
