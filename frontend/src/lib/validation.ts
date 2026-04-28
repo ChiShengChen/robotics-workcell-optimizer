@@ -76,7 +76,7 @@ export function validateLayout(
     perComponent.set(id, list)
   }
 
-  const robot = proposal.components.find((c) => c.type === 'robot') ?? null
+  const robots = proposal.components.filter((c) => c.type === 'robot')
   const fence = proposal.components.find((c) => c.type === 'fence') ?? null
   const operator = proposal.components.find((c) => c.type === 'operator_zone') ?? null
   const bodies = proposal.components.filter(
@@ -107,24 +107,47 @@ export function validateLayout(
     }
   }
 
-  // 2. Reach feasibility for every pick/place target.
+  // 2. Reach feasibility for every pick/place target. In multi-arm layouts
+  //    each target only needs to be reachable by the robot it's assigned to
+  //    (proposal.task_assignment maps robot.id -> [component.id, ...]). If a
+  //    target appears in no assignment (or task_assignment is empty for
+  //    single-arm fallback), check it against ANY robot — the best margin
+  //    wins so we don't penalise a target that one of the arms can reach.
   const unreachable: ValidationResult['unreachableTargets'] = []
-  if (robot) {
-    const eff =
-      ((robot.dims.effective_reach_mm as number | undefined) ??
-        (robot.dims.reach_mm as number | undefined) ??
-        2400) * 1
-    const center: Point = { x: robot.x_mm, y: robot.y_mm }
+  if (robots.length > 0) {
+    const reachByRobot = new Map<string, { eff: number; center: Point }>()
+    for (const r of robots) {
+      const eff =
+        ((r.dims.effective_reach_mm as number | undefined) ??
+          (r.dims.reach_mm as number | undefined) ??
+          2400) * 1
+      reachByRobot.set(r.id, { eff, center: { x: r.x_mm, y: r.y_mm } })
+    }
+    const assignment = proposal.task_assignment ?? {}
     for (const c of proposal.components) {
       for (const t of pickTargetsFor(c)) {
-        const { ok, signedMargin } = reachableByRobot(t.point, center, eff)
-        if (!ok) {
-          unreachable.push({ componentId: t.componentId, signedMargin })
+        // Find which robot(s) own this target. Empty -> all robots are
+        // candidates (single-arm legacy proposals have empty task_assignment).
+        const owners = robots.filter((r) => {
+          const owned = assignment[r.id]
+          return owned === undefined || owned.length === 0 || owned.includes(t.componentId)
+        })
+        const candidates = owners.length > 0 ? owners : robots
+        let best: { ok: boolean; signedMargin: number } | null = null
+        for (const r of candidates) {
+          const { eff, center } = reachByRobot.get(r.id)!
+          const result = reachableByRobot(t.point, center, eff)
+          if (best === null || result.signedMargin > best.signedMargin) {
+            best = result
+          }
+        }
+        if (best && !best.ok) {
+          unreachable.push({ componentId: t.componentId, signedMargin: best.signedMargin })
           push(t.componentId, {
             componentId: t.componentId,
             kind: 'unreachable',
-            marginMm: signedMargin,
-            message: `Unreachable (${(-signedMargin).toFixed(0)} mm beyond effective reach)`,
+            marginMm: best.signedMargin,
+            message: `Unreachable (${(-best.signedMargin).toFixed(0)} mm beyond effective reach)`,
           })
         }
       }
