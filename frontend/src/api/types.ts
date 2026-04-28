@@ -8,7 +8,12 @@ export type IdealUseCase =
   | 'heavy_bag'
   | 'mixed_sku'
   | 'layer_picker'
-export type LayoutTemplate = 'in_line' | 'L_shape' | 'U_shape' | 'dual_pallet'
+export type LayoutTemplate =
+  | 'in_line'
+  | 'L_shape'
+  | 'U_shape'
+  | 'dual_pallet'
+  | 'dual_arm_dual_pallet'
 export type PlacedType = 'robot' | 'conveyor' | 'pallet' | 'fence' | 'operator_zone'
 export type ConstraintKind =
   | 'min_clearance'
@@ -141,6 +146,8 @@ export interface LayoutProposal {
   proposal_id: string
   template: LayoutTemplate
   robot_model_id: string | null
+  robot_model_ids: string[]
+  task_assignment: Record<string, string[]>
   components: PlacedComponent[]
   cell_bounds_mm: [number, number]
   estimated_cycle_time_s: number

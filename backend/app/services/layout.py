@@ -18,7 +18,7 @@ from app.schemas.robot import IdealUseCase, RobotSpec
 from app.schemas.workcell import Pallet, Robot, WorkcellSpec
 from app.services.catalog import RobotCatalogService
 
-Template = Literal["in_line", "L_shape", "U_shape", "dual_pallet"]
+Template = Literal["in_line", "L_shape", "U_shape", "dual_pallet", "dual_arm_dual_pallet"]
 
 # Pallet footprints (mm) for known standards.
 PALLET_FOOTPRINTS_MM: dict[str, tuple[float, float]] = {
@@ -125,15 +125,24 @@ class GreedyLayoutGenerator:
     def generate(self, spec: WorkcellSpec, n_variants: int = 3) -> list[LayoutProposal]:
         templates: list[Template] = ["in_line", "L_shape", "U_shape", "dual_pallet"]
         is_continuous = self._is_continuous_op(spec)
-        # Bias dual_pallet to the front when continuous operation is required.
-        if is_continuous:
-            templates = ["dual_pallet", "L_shape", "in_line", "U_shape"]
+        is_high_throughput = spec.throughput.cases_per_hour_target >= 1500
+        # Bias dual_pallet first for continuous ops; bias dual_arm first for very
+        # high throughput where a single robot can't keep up.
+        if is_high_throughput:
+            templates = ["dual_arm_dual_pallet", "dual_pallet", "L_shape", "in_line"]
+        elif is_continuous:
+            templates = ["dual_pallet", "dual_arm_dual_pallet", "L_shape", "in_line", "U_shape"]
         proposals: list[LayoutProposal] = []
         seen_keys: set[str] = set()
         for tpl in templates:
             if len(proposals) >= n_variants:
                 break
-            robot, robot_assumption = self._pick_robot(spec, dual_pallet=(tpl == "dual_pallet"))
+            n_arms = 2 if tpl == "dual_arm_dual_pallet" else 1
+            robot, robot_assumption = self._pick_robot(
+                spec,
+                dual_pallet=(tpl == "dual_pallet"),
+                n_arms=n_arms,
+            )
             proposal = self._build_template(spec, tpl, robot, robot_assumption)
             key = f"{tpl}-{proposal.robot_model_id}"
             if key in seen_keys:
@@ -145,7 +154,7 @@ class GreedyLayoutGenerator:
     # -- robot selection ----------------------------------------------------
 
     def _pick_robot(
-        self, spec: WorkcellSpec, dual_pallet: bool
+        self, spec: WorkcellSpec, dual_pallet: bool, n_arms: int = 1
     ) -> tuple[RobotSpec | None, str | None]:
         case_mass = spec.case_mass_kg or DEFAULT_CASE_MASS_KG
         required_payload = case_mass * DEFAULT_PICK_COUNT + DEFAULT_EOAT_MASS_KG
@@ -169,6 +178,9 @@ class GreedyLayoutGenerator:
         target_uph = spec.throughput.cases_per_hour_target * 1.10
         if dual_pallet:
             target_uph = target_uph / 1.9
+        if n_arms > 1:
+            # Multi-arm: each robot only needs to do its share.
+            target_uph = target_uph / n_arms
 
         use_case_filter = None
         if spec.throughput.mixed_sequence:
@@ -240,31 +252,47 @@ class GreedyLayoutGenerator:
         robot: RobotSpec | None,
         robot_assumption: str | None,
     ) -> LayoutProposal:
+        task_assignment: dict[str, list[str]] = {}
         if template == "in_line":
             placed, rationale = self._template_in_line(spec, robot)
         elif template == "L_shape":
             placed, rationale = self._template_l_shape(spec, robot)
         elif template == "U_shape":
             placed, rationale = self._template_u_shape(spec, robot)
+        elif template == "dual_arm_dual_pallet":
+            placed, rationale, task_assignment = self._template_dual_arm_dual_pallet(spec, robot)
         else:
             placed, rationale = self._template_dual_pallet(spec, robot)
+
+        n_robots = sum(1 for c in placed if c.type == "robot")
+        is_dual_arm = n_robots >= 2
 
         cycle_s = (
             estimate_cycle_time_s(robot, dual_pallet=(template == "dual_pallet"))
             if robot is not None
             else 0.0
         )
-        uph = estimate_uph(cycle_s)
+        # System UPH: parallel arms multiply the single-arm UPH.
+        single_arm_uph = estimate_uph(cycle_s)
+        uph = single_arm_uph * n_robots if is_dual_arm else single_arm_uph
+
         assumptions: list[str] = []
         if robot_assumption:
             assumptions.append(robot_assumption)
         if robot is None:
             assumptions.append("No feasible robot — placeholder layout for visualization only.")
+        if is_dual_arm:
+            assumptions.append(
+                f"{n_robots} robots in parallel; system UPH ≈ {uph:.0f} (each arm ~{single_arm_uph:.0f})."
+            )
 
+        robot_ids = [robot.model] * n_robots if robot else []
         return LayoutProposal(
             proposal_id=str(uuid.uuid4())[:8],
             template=template,
             robot_model_id=(robot.model if robot else None),
+            robot_model_ids=robot_ids,
+            task_assignment=task_assignment,
             components=placed,
             cell_bounds_mm=spec.cell_envelope_mm,
             estimated_cycle_time_s=cycle_s,
@@ -294,18 +322,20 @@ class GreedyLayoutGenerator:
         return [c for c in spec.components if isinstance(c, Pallet)]
 
     def _make_robot_placed(
-        self, spec: WorkcellSpec, robot: RobotSpec | None, x: float, y: float
+        self, spec: WorkcellSpec, robot: RobotSpec | None, x: float, y: float,
+        robot_id: str = "robot_1",
     ) -> PlacedComponent:
         base_radius = 350.0 if robot is None else max(robot.footprint_l_mm, robot.footprint_w_mm) / 2
         reach = 2400.0 if robot is None else robot.reach_mm
         return PlacedComponent(
-            id="robot_1", type="robot", x_mm=x, y_mm=y, yaw_deg=0.0,
+            id=robot_id, type="robot", x_mm=x, y_mm=y, yaw_deg=0.0,
             dims={
                 "base_radius_mm": base_radius,
                 "reach_mm": reach,
                 "effective_reach_mm": reach * 0.85,
                 "footprint_l_mm": robot.footprint_l_mm if robot else 700.0,
                 "footprint_w_mm": robot.footprint_w_mm if robot else 700.0,
+                "model_id": robot.model if robot else None,
             },
         )
 
@@ -521,3 +551,100 @@ class GreedyLayoutGenerator:
 
         return placed, ("Dual-pallet swap stations: continuous operation while operator "
                         "exchanges full pallets on the opposite side; ~1.9× single-pallet UPH.")
+
+    # -- dual_arm_dual_pallet ----------------------------------------------
+
+    def _template_dual_arm_dual_pallet(
+        self, spec: WorkcellSpec, robot: RobotSpec | None
+    ) -> tuple[list[PlacedComponent], str, dict[str, list[str]]]:
+        """Two robots, each with its own dedicated infeed + outboard pallet.
+        System UPH ≈ 2× single-arm. No motion coordination needed (each robot
+        has its own workspace). Most common high-throughput palletizing
+        configuration in real food/beverage lines.
+        """
+        cw, ch = spec.cell_envelope_mm
+        eff = robot.effective_max_reach_mm if robot else 2040.0
+        # Place robots so each gets its own quadrant — far enough apart that
+        # their reach envelopes don't overlap.
+        # Each robot's reach circle has radius eff. Place rx_left + eff <
+        # rx_right - eff -> rx_right - rx_left > 2*eff. Then offset by pallet
+        # space outboard.
+        margin_inside = max(0.5 * eff, 1500.0)
+        rx_left = max(eff + 200.0, cw * 0.30 - margin_inside * 0.0)
+        rx_right = min(cw - eff - 200.0, cw * 0.70 + margin_inside * 0.0)
+        # Fall back to symmetric positioning if cell is too narrow.
+        if rx_right - rx_left < 2.0 * eff:
+            rx_left = cw * 0.30
+            rx_right = cw * 0.70
+        ry = ch * 0.55
+
+        placed: list[PlacedComponent] = []
+        placed.append(self._make_robot_placed(spec, robot, rx_left, ry, robot_id="robot_1"))
+        placed.append(self._make_robot_placed(spec, robot, rx_right, ry, robot_id="robot_2"))
+
+        # Two short infeed conveyors, one per robot, entering from the south.
+        conv_len = min(DEFAULT_INFEED_LENGTH_MM, max(800.0, 0.5 * eff))
+        conv_y = max(0.0, ry - 0.7 * eff - conv_len)
+        conv1_x = rx_left - DEFAULT_INFEED_WIDTH_MM / 2
+        conv2_x = rx_right - DEFAULT_INFEED_WIDTH_MM / 2
+        # Override the default id="conveyor_1" so we can have two.
+        placed.append(self._make_conveyor(conv1_x, conv_y, conv_len,
+                                          DEFAULT_INFEED_WIDTH_MM, yaw_deg=90.0))
+        # _make_conveyor hardcodes id; replace it on the fly with conveyor_2.
+        placed.append(
+            self._make_conveyor(conv2_x, conv_y, conv_len,
+                                DEFAULT_INFEED_WIDTH_MM, yaw_deg=90.0).model_copy(
+                update={"id": "conveyor_2"}
+            )
+        )
+
+        # Pallets outboard of each robot (one to the left of robot_1, one
+        # to the right of robot_2) so they don't compete for floor space
+        # near the central conveyor.
+        std = spec.pallet_standard
+        pallets = self._pallet_components(spec)
+        if len(pallets) < 2:
+            pl, pw = PALLET_FOOTPRINTS_MM.get(std or "EUR", PALLET_FOOTPRINTS_MM["EUR"])
+            dims_list = [(pl, pw), (pl, pw)]
+        else:
+            dims_list = [_pallet_dims(p, std) for p in pallets[:2]]
+        (pl_l, pw_l), (pl_r, pw_r) = dims_list
+
+        left_offset = self._pallet_offset_mm(eff, pl_l)
+        right_offset = self._pallet_offset_mm(eff, pl_r)
+        # robot_1 -> pallet to its WEST.
+        pal1_x = max(0.0, rx_left - left_offset - pl_l)
+        pal1_y = ry - pw_l / 2
+        # robot_2 -> pallet to its EAST.
+        pal2_x = min(cw - pl_r, rx_right + right_offset)
+        pal2_y = ry - pw_r / 2
+        placed.append(self._make_pallet(1, pal1_x, pal1_y, pl_l, pw_l, std))
+        placed.append(self._make_pallet(2, pal2_x, pal2_y, pl_r, pw_r, std))
+
+        # Single operator zone on the open north side, between the robots.
+        rx_mid = (rx_left + rx_right) / 2
+        op_x = rx_mid - DEFAULT_OPERATOR_W_MM / 2
+        op_y = min(ch - DEFAULT_OPERATOR_D_MM, ry + 0.6 * eff + 100)
+        placed.append(self._make_operator(op_x, op_y))
+
+        # Fence wraps BOTH robots' reach envelopes.
+        s_safe = iso13855_safety_distance_mm(self._has_hard_guard(spec))
+        margin = eff + s_safe
+        x0 = max(0.0, rx_left - margin)
+        y0 = max(0.0, ry - margin)
+        x1 = min(cw, rx_right + margin)
+        y1 = min(ch, ry + margin)
+        polyline = [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]
+        placed.append(self._make_fence(polyline))
+
+        # Each robot owns one infeed conveyor + one pallet.
+        task_assignment = {
+            "robot_1": ["pallet_1", "conveyor_1"],
+            "robot_2": ["pallet_2", "conveyor_2"],
+        }
+        rationale = (
+            "Dual-arm dual-pallet: two robots flank a central infeed conveyor; "
+            "each robot exclusively serves its outboard pallet. System UPH ≈ 2× "
+            "single-arm. No motion coordination needed (no shared workspace)."
+        )
+        return placed, rationale, task_assignment

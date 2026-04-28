@@ -39,23 +39,39 @@ class LayoutProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     proposal_id: str = Field(description="Unique id for this proposal.")
-    template: Literal["in_line", "L_shape", "U_shape", "dual_pallet"] = Field(
-        description="Topology template used to seed this proposal."
-    )
+    template: Literal[
+        "in_line", "L_shape", "U_shape", "dual_pallet", "dual_arm_dual_pallet"
+    ] = Field(description="Topology template used to seed this proposal.")
     robot_model_id: str | None = Field(
-        description="RobotSpec.model selected; null if no feasible robot was found."
+        description="Primary robot's RobotSpec.model; null if no feasible robot was found."
+    )
+    robot_model_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "All robots' models in the order their PlacedComponents appear. "
+            "Single-arm layouts have len==1; dual-arm have len==2. "
+            "robot_model_id mirrors robot_model_ids[0] for backward compat."
+        ),
+    )
+    task_assignment: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Maps robot.id -> list of pallet.id this robot serves. Empty dict "
+            "means default single-arm: the only robot serves every pallet. "
+            "Used by scoring to compute per-robot reach + cycle."
+        ),
     )
     components: list[PlacedComponent] = Field(
-        description="All placed components (robot, conveyor, pallets, fence, operator zone)."
+        description="All placed components (robot(s), conveyor, pallets, fence, operator zone)."
     )
     cell_bounds_mm: tuple[float, float] = Field(
         description="(W, H) of the workcell envelope used."
     )
     estimated_cycle_time_s: float = Field(
-        description="Estimated single-cycle time in seconds.", ge=0
+        description="Estimated single-cycle time in seconds (per-robot average).", ge=0
     )
     estimated_uph: float = Field(
-        description="Estimated units per hour at the target case mass.", ge=0
+        description="Estimated SYSTEM units per hour (sum across robots for multi-arm).", ge=0
     )
     rationale: str = Field(description="Short explanation of why this template was chosen.")
     assumptions: list[str] = Field(

@@ -153,151 +153,211 @@ def score_compactness(proposal: LayoutProposal, spec: WorkcellSpec) -> float:
     return _clamp(0.6 * util + 0.4 * envelope_use - 0.2 * aspect_penalty)
 
 
+def _conveyor_target(c: PlacedComponent) -> tuple[float, float]:
+    length = float(c.dims.get("length_mm", 0))
+    width = float(c.dims.get("width_mm", 0))
+    is_vertical = abs(((c.yaw_deg % 180.0) + 180.0) % 180.0 - 90.0) < 1e-3
+    if is_vertical:
+        return (c.x_mm + width / 2, c.y_mm + length)
+    return (c.x_mm + length, c.y_mm + width / 2)
+
+
+def _pallet_target(c: PlacedComponent) -> tuple[float, float]:
+    length = float(c.dims.get("length_mm", 1200))
+    width = float(c.dims.get("width_mm", 800))
+    return (c.x_mm + length / 2, c.y_mm + width / 2)
+
+
 def _reach_targets(proposal: LayoutProposal) -> list[tuple[str, float, float]]:
     """Pick/place targets the robot must reach: conveyor tip + pallet centers."""
     targets: list[tuple[str, float, float]] = []
     for c in proposal.components:
         if c.type == "conveyor":
-            length = float(c.dims.get("length_mm", 0))
-            width = float(c.dims.get("width_mm", 0))
-            is_vertical = abs(((c.yaw_deg % 180.0) + 180.0) % 180.0 - 90.0) < 1e-3
-            if is_vertical:
-                # Pick at top of belt (largest y).
-                tx = c.x_mm + width / 2
-                ty = c.y_mm + length
-            else:
-                # Pick at far end along +x.
-                tx = c.x_mm + length
-                ty = c.y_mm + width / 2
+            tx, ty = _conveyor_target(c)
             targets.append((c.id, tx, ty))
         elif c.type == "pallet":
-            length = float(c.dims.get("length_mm", 1200))
-            width = float(c.dims.get("width_mm", 800))
-            targets.append((c.id, c.x_mm + length / 2, c.y_mm + width / 2))
+            tx, ty = _pallet_target(c)
+            targets.append((c.id, tx, ty))
     return targets
 
 
+def _targets_for_robot(
+    proposal: LayoutProposal, robot_id: str
+) -> list[tuple[str, float, float]]:
+    """Pick/place targets the *specific* robot must reach.
+
+    For multi-arm layouts, task_assignment[robot_id] lists BOTH conveyor ids
+    and pallet ids the robot owns. For single-arm (no task_assignment), every
+    robot serves every conveyor + every pallet.
+    """
+    targets: list[tuple[str, float, float]] = []
+    assigned_ids = proposal.task_assignment.get(robot_id)
+    for c in proposal.components:
+        if c.type == "conveyor":
+            if assigned_ids is None or c.id in assigned_ids:
+                tx, ty = _conveyor_target(c)
+                targets.append((c.id, tx, ty))
+        elif c.type == "pallet":
+            if assigned_ids is None or c.id in assigned_ids:
+                tx, ty = _pallet_target(c)
+                targets.append((c.id, tx, ty))
+    return targets
+
+
+def _robots(proposal: LayoutProposal) -> list[PlacedComponent]:
+    return [c for c in proposal.components if c.type == "robot"]
+
+
 def _robot_center(proposal: LayoutProposal) -> tuple[float, float] | None:
-    robot = next((c for c in proposal.components if c.type == "robot"), None)
-    if robot is None:
-        return None
-    return robot.x_mm, robot.y_mm
+    """Backward-compat helper for single-arm callers — returns the FIRST robot."""
+    robots = _robots(proposal)
+    return (robots[0].x_mm, robots[0].y_mm) if robots else None
 
 
 def score_reach_margin(
-    proposal: LayoutProposal, spec: WorkcellSpec, robot_spec: RobotSpec | None
+    proposal: LayoutProposal,
+    spec: WorkcellSpec,
+    robot_specs: list[RobotSpec] | RobotSpec | None,
 ) -> dict:
-    """Signed margin = effective_reach - distance_to_target.
-    Negative = HARD violation (target unreachable).
-    Score: sigmoid of min margin around REACH_X0.
+    """Signed margin = effective_reach - distance_to_target. Multi-robot
+    aware: each robot is checked against its assigned targets only (per
+    `task_assignment`); for single-arm or empty task_assignment, every robot
+    serves every pallet. Aggregate score = sigmoid of the WORST min margin
+    across all robots.
     """
-    if robot_spec is None:
-        return {
-            "score": 0.0,
-            "min_margin_mm": -math.inf,
-            "target_margins": [],
-            "violations": [
-                Violation(
-                    kind="unreachable",
-                    severity="hard",
-                    component_ids=[],
-                    message="No robot selected — cannot compute reach margin.",
-                    margin_mm=None,
-                )
-            ],
-        }
-    rc = _robot_center(proposal)
-    if rc is None:
-        return {
-            "score": 0.0,
-            "min_margin_mm": -math.inf,
-            "target_margins": [],
-            "violations": [
-                Violation(
-                    kind="unreachable",
-                    severity="hard",
-                    component_ids=[],
-                    message="Layout has no robot component.",
-                    margin_mm=None,
-                )
-            ],
-        }
-    rx, ry = rc
-    eff = robot_spec.effective_max_reach_mm
-    margins: list[tuple[str, float]] = []
+    spec_list = _normalise_robot_specs(robot_specs)
+    robots = _robots(proposal)
+    if not spec_list:
+        return _no_robot_reach("No robot selected — cannot compute reach margin.")
+    if not robots:
+        return _no_robot_reach("Layout has no robot component.")
+
+    margins_per_robot: list[tuple[str, float, list[tuple[str, float]]]] = []
     violations: list[Violation] = []
-    targets = _reach_targets(proposal)
-    if not targets:
-        return {"score": 0.5, "min_margin_mm": 0.0, "target_margins": [], "violations": []}
-    for tid, tx, ty in targets:
-        d = math.hypot(tx - rx, ty - ry)
-        margin = eff - d
-        margins.append((tid, margin))
-        if margin < 0:
-            violations.append(
-                Violation(
-                    kind="unreachable",
-                    severity="hard",
-                    component_ids=[tid],
-                    message=(
-                        f"Target {tid} is {-margin:.0f} mm beyond effective reach "
-                        f"({eff:.0f} mm)."
-                    ),
-                    margin_mm=margin,
+    for i, robot_pc in enumerate(robots):
+        # Pair the i-th robot PlacedComponent with the i-th RobotSpec (or last).
+        rspec = spec_list[i] if i < len(spec_list) else spec_list[-1]
+        eff = rspec.effective_max_reach_mm
+        rx, ry = robot_pc.x_mm, robot_pc.y_mm
+        targets = _targets_for_robot(proposal, robot_pc.id)
+        if not targets:
+            margins_per_robot.append((robot_pc.id, math.inf, []))
+            continue
+        per_target: list[tuple[str, float]] = []
+        for tid, tx, ty in targets:
+            d = math.hypot(tx - rx, ty - ry)
+            margin = eff - d
+            per_target.append((tid, margin))
+            if margin < 0:
+                violations.append(
+                    Violation(
+                        kind="unreachable", severity="hard",
+                        component_ids=[robot_pc.id, tid],
+                        message=(
+                            f"{robot_pc.id} -> {tid}: {-margin:.0f} mm beyond effective "
+                            f"reach ({eff:.0f} mm)."
+                        ),
+                        margin_mm=margin,
+                    )
                 )
-            )
-    min_margin = min(m for _, m in margins)
-    if min_margin < 0:
+        min_for_robot = min(m for _, m in per_target)
+        margins_per_robot.append((robot_pc.id, min_for_robot, per_target))
+
+    finite_mins = [m for _, m, _ in margins_per_robot if m != math.inf]
+    if not finite_mins:
+        return {"score": 0.5, "min_margin_mm": 0.0, "target_margins": [], "violations": violations}
+    worst_min = min(finite_mins)
+    if worst_min < 0:
         score = 0.0
     else:
-        score = _sigmoid(min_margin, REACH_K, REACH_X0)
+        score = _sigmoid(worst_min, REACH_K, REACH_X0)
     return {
         "score": _clamp(score),
-        "min_margin_mm": min_margin,
-        "target_margins": margins,
+        "min_margin_mm": worst_min,
+        "target_margins": margins_per_robot,
         "violations": violations,
     }
 
 
+def _normalise_robot_specs(
+    robot_specs: list[RobotSpec] | RobotSpec | None,
+) -> list[RobotSpec]:
+    if robot_specs is None:
+        return []
+    if isinstance(robot_specs, RobotSpec):
+        return [robot_specs]
+    return list(robot_specs)
+
+
+def _no_robot_reach(msg: str) -> dict:
+    return {
+        "score": 0.0,
+        "min_margin_mm": -math.inf,
+        "target_margins": [],
+        "violations": [
+            Violation(kind="unreachable", severity="hard", component_ids=[], message=msg, margin_mm=None)
+        ],
+    }
+
+
 def score_cycle_efficiency(
-    proposal: LayoutProposal, robot_spec: RobotSpec | None, target_uph: float
+    proposal: LayoutProposal,
+    robot_specs: list[RobotSpec] | RobotSpec | None,
+    target_uph: float,
 ) -> dict:
-    """Use trapezoidal estimate at the actual robot↔target distance, not just std cycle.
-
-    Score = cycle_floor / actual_cycle, capped at 1.
+    """Per-robot trapezoidal cycle estimate; system UPH = sum across robots
+    (parallel operation under task partition). Returns the average cycle and
+    the system UPH for display.
     """
-    if robot_spec is None or _robot_center(proposal) is None:
-        return {"score": 0.0, "estimated_cycle_s": 0.0, "estimated_uph": 0.0}
-    rx, ry = _robot_center(proposal)  # type: ignore[misc]
-    targets = _reach_targets(proposal)
-    if not targets:
+    spec_list = _normalise_robot_specs(robot_specs)
+    robots = _robots(proposal)
+    if not spec_list or not robots:
         return {"score": 0.0, "estimated_cycle_s": 0.0, "estimated_uph": 0.0}
 
-    derate = SIX_AXIS_DERATE if robot_spec.axes == 6 else 1.0
-    v = V_MAX_MM_S_4AXIS * derate
-    a = A_MAX_MM_S2_4AXIS * derate
+    per_robot_cycles: list[float] = []
+    per_robot_uph: list[float] = []
+    n_pallets_total = sum(1 for c in proposal.components if c.type == "pallet")
 
-    # Average pick→place→home loop: 2× the average target distance.
-    avg_d = sum(math.hypot(tx - rx, ty - ry) for _, tx, ty in targets) / len(targets)
-    motion_s = trapezoidal_time_s(2 * avg_d, v, a)
-    cycle_s = motion_s + 0.8  # pick + place dwell
-    # Respect cph_std as a floor (manufacturer-tuned best case).
-    cycle_s = max(cycle_s, 3600.0 / robot_spec.cycles_per_hour_std)
-    n_pallets = sum(1 for c in proposal.components if c.type == "pallet")
-    if n_pallets >= 2 or proposal.template == "dual_pallet":
-        cycle_s = cycle_s / (2.0 * 0.95)
-    uph = 3600.0 / cycle_s if cycle_s > 0 else 0.0
+    for i, robot_pc in enumerate(robots):
+        rspec = spec_list[i] if i < len(spec_list) else spec_list[-1]
+        derate = SIX_AXIS_DERATE if rspec.axes == 6 else 1.0
+        v = V_MAX_MM_S_4AXIS * derate
+        a = A_MAX_MM_S2_4AXIS * derate
+        targets = _targets_for_robot(proposal, robot_pc.id)
+        if not targets:
+            continue
+        rx, ry = robot_pc.x_mm, robot_pc.y_mm
+        avg_d = sum(math.hypot(tx - rx, ty - ry) for _, tx, ty in targets) / len(targets)
+        motion_s = trapezoidal_time_s(2 * avg_d, v, a)
+        cycle_s = motion_s + 0.8
+        cycle_s = max(cycle_s, 3600.0 / rspec.cycles_per_hour_std)
+        # Pallets THIS ROBOT is responsible for.
+        assigned = proposal.task_assignment.get(robot_pc.id)
+        n_my_pallets = (
+            len([c for c in proposal.components
+                 if c.type == "pallet" and (assigned is None or c.id in assigned)])
+        ) if assigned is not None else n_pallets_total
+        if n_my_pallets >= 2 or proposal.template == "dual_pallet":
+            cycle_s = cycle_s / (2.0 * 0.95)
+        cat_cycle = estimate_cycle_time_s(rspec, dual_pallet=(n_my_pallets >= 2))
+        if cycle_s < cat_cycle:
+            cycle_s = cat_cycle
+        uph = 3600.0 / cycle_s if cycle_s > 0 else 0.0
+        per_robot_cycles.append(cycle_s)
+        per_robot_uph.append(uph)
 
-    # Score: how close UPH gets to target_uph (saturated at 1.1×).
+    if not per_robot_cycles:
+        return {"score": 0.0, "estimated_cycle_s": 0.0, "estimated_uph": 0.0}
+
+    # Worst single-robot cycle = bottleneck for "estimated_cycle_s" display.
+    bottleneck_cycle = max(per_robot_cycles)
+    system_uph = sum(per_robot_uph)
+
     if target_uph <= 0:
-        return {"score": 1.0, "estimated_cycle_s": cycle_s, "estimated_uph": uph}
-    ratio = uph / target_uph
+        return {"score": 1.0, "estimated_cycle_s": bottleneck_cycle, "estimated_uph": system_uph}
+    ratio = system_uph / target_uph
     score = _clamp(min(ratio, 1.1) / 1.1)
-    # Use the catalogue-tuned cycle as a sanity for the score floor.
-    cat_cycle = estimate_cycle_time_s(robot_spec, dual_pallet=(n_pallets >= 2))
-    if cycle_s < cat_cycle:
-        cycle_s = cat_cycle  # never report a cycle better than catalog
-    return {"score": score, "estimated_cycle_s": cycle_s, "estimated_uph": uph}
+    return {"score": score, "estimated_cycle_s": bottleneck_cycle, "estimated_uph": system_uph}
 
 
 def score_safety_clearance(proposal: LayoutProposal, spec: WorkcellSpec) -> dict:
@@ -492,15 +552,19 @@ def _check_envelope(
 def score_layout(
     proposal: LayoutProposal,
     spec: WorkcellSpec,
-    robot_spec: RobotSpec | None,
+    robot_specs: list[RobotSpec] | RobotSpec | None,
     weights: dict[str, float] | None = None,
 ) -> ScoreBreakdown:
-    """Aggregate the five components. Hard violations zero the aggregate."""
+    """Aggregate the five components. Hard violations zero the aggregate.
+
+    Multi-arm: pass a list[RobotSpec] in the same order as the proposal's
+    robot PlacedComponents. Single-arm: pass one RobotSpec (or None).
+    """
     w = {**DEFAULT_WEIGHTS, **(weights or {})}
 
     compactness = score_compactness(proposal, spec)
-    reach = score_reach_margin(proposal, spec, robot_spec)
-    cycle = score_cycle_efficiency(proposal, robot_spec, spec.throughput.cases_per_hour_target)
+    reach = score_reach_margin(proposal, spec, robot_specs)
+    cycle = score_cycle_efficiency(proposal, robot_specs, spec.throughput.cases_per_hour_target)
     safety = score_safety_clearance(proposal, spec)
     throughput = score_throughput_feasibility(
         cycle["estimated_uph"], spec.throughput.cases_per_hour_target

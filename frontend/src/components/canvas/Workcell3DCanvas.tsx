@@ -165,120 +165,256 @@ function AnimatedScene({
   speed: number
   resetTick: number
 }) {
-  const cycleCfg = useMemo<CycleConfig | null>(() => buildCycleConfig(proposal, spec), [proposal, spec])
+  const robotComps = useMemo(
+    () => proposal.components.filter((c) => c.type === 'robot'),
+    [proposal.components],
+  )
+  const conveyorComps = useMemo(
+    () => proposal.components.filter((c) => c.type === 'conveyor'),
+    [proposal.components],
+  )
 
-  const [version, setVersion] = useState(0) // bumps when placedPerPallet changes
-  const stateRef = useRef<CycleState | null>(null)
-  const eoatRef = useRef(new THREE.Vector3())
-  const carryingRef = useRef(false)
-  const armPoseRef = useRef<{ j1: number; elbow: THREE.Vector3; wrist: THREE.Vector3; hip: THREE.Vector3 } | null>(null)
+  // Build one cycle config + state per robot, partitioned by task_assignment.
+  const robotInstances = useMemo(() => {
+    return robotComps.map((rc, idx) =>
+      buildRobotInstance(rc, idx, proposal, spec, robotComps.length),
+    )
+  }, [robotComps, conveyorComps, proposal, spec])
 
-  // Reset when proposal or spec changes, or when user hits the reset button.
+  const [version, setVersion] = useState(0) // bumps when any pallet count changes
+  const placedRef = useRef<Record<string, number>>({})
+
+  // Reset all instances when proposal/spec changes or user hits reset.
   useEffect(() => {
-    if (!cycleCfg) {
-      stateRef.current = null
-      return
-    }
-    stateRef.current = initialCycleState(cycleCfg)
-    eoatRef.current.copy(cycleCfg.homePoint)
-    carryingRef.current = false
-    setVersion((v) => v + 1)
-  }, [cycleCfg, resetTick])
-
-  // Robot geometry (mirrors the visual model in Robot3D).
-  const robotComp = proposal.components.find((c) => c.type === 'robot')
-  const baseR = ((robotComp?.dims.base_radius_mm as number | undefined) ?? 350) * MM_TO_M
-  const reach = ((robotComp?.dims.reach_mm as number | undefined) ?? 2400) * MM_TO_M
-  const armGeom: ArmGeometry | null = robotComp
-    ? {
-        baseWorld: new THREE.Vector3(robotComp.x_mm * MM_TO_M, 0, robotComp.y_mm * MM_TO_M),
-        hipHeight: ROBOT_BASE_HEIGHT + baseR * 0.35,
-        l1: reach * 0.55,
-        l2: reach * 0.55,
+    placedRef.current = {}
+    for (const inst of robotInstances) {
+      if (inst.cycleCfg) {
+        inst.stateRef.current = initialCycleState(inst.cycleCfg)
+        inst.eoatRef.current.copy(inst.cycleCfg.homePoint)
+        // Apply phase offset by stepping the state forward.
+        if (inst.phaseOffsetT > 0) {
+          const stepped = stepCycle(inst.stateRef.current, inst.cycleCfg, inst.phaseOffsetT)
+          inst.stateRef.current = stepped.state
+          inst.eoatRef.current.copy(stepped.eoatPosition)
+          inst.carryingRef.current = stepped.carrying
+        }
       }
-    : null
+    }
+    setVersion((v) => v + 1)
+  }, [robotInstances, resetTick])
 
-  // Conveyor belt cases drift toward the robot. Each case is at a u in [0, 1]
-  // along the belt's flow direction (1 = pick end). We seed a constant pool.
-  const conveyorComp = proposal.components.find((c) => c.type === 'conveyor')
-  const beltCasesRef = useRef<{ u: number }[]>([])
+  // Belt cases per conveyor.
+  const beltCasesByConveyor = useRef<Record<string, { u: number }[]>>({})
   useEffect(() => {
-    beltCasesRef.current = Array.from({ length: 4 }).map((_, i) => ({ u: i * 0.22 }))
-  }, [conveyorComp?.id])
+    const next: Record<string, { u: number }[]> = {}
+    for (const c of conveyorComps) {
+      next[c.id] = Array.from({ length: 4 }).map((_, i) => ({ u: i * 0.22 }))
+    }
+    beltCasesByConveyor.current = next
+  }, [conveyorComps.map((c) => c.id).join('|')])
+
+  // Determine which robot owns each conveyor (for "hide front belt case while
+  // robot is carrying" behaviour).
+  const conveyorCarrying = useMemo(() => {
+    const owners: Record<string, string | null> = {}
+    for (const c of conveyorComps) {
+      let owner: string | null = null
+      for (const rc of robotComps) {
+        const assigned = proposal.task_assignment[rc.id]
+        if (assigned === undefined || assigned.includes(c.id)) {
+          owner = rc.id
+          break
+        }
+      }
+      owners[c.id] = owner
+    }
+    return owners
+  }, [conveyorComps, robotComps, proposal.task_assignment])
 
   useFrame((_, dt) => {
-    if (!stateRef.current || !cycleCfg) return
     const dtSim = playing ? dt * speed : 0
-    const out = stepCycle(stateRef.current, cycleCfg, dtSim)
-    const prev = stateRef.current
-    stateRef.current = out.state
-    eoatRef.current.copy(out.eoatPosition)
-    carryingRef.current = out.carrying
-    if (armGeom) {
-      const pose = solveArmIK(armGeom, eoatRef.current)
-      armPoseRef.current = {
-        j1: pose.j1,
-        elbow: pose.elbowWorld,
-        wrist: pose.wristWorld,
-        hip: pose.hipWorld,
+    let placedChanged = false
+    for (const inst of robotInstances) {
+      if (!inst.stateRef.current || !inst.cycleCfg) continue
+      const out = stepCycle(inst.stateRef.current, inst.cycleCfg, dtSim)
+      const prev = inst.stateRef.current
+      inst.stateRef.current = out.state
+      inst.eoatRef.current.copy(out.eoatPosition)
+      inst.carryingRef.current = out.carrying
+      if (inst.armGeom) {
+        const pose = solveArmIK(inst.armGeom, inst.eoatRef.current)
+        inst.armPoseRef.current = {
+          j1: pose.j1,
+          elbow: pose.elbowWorld,
+          wrist: pose.wristWorld,
+          hip: pose.hipWorld,
+        }
+      }
+      if (prev && out.state.placedPerPallet !== prev.placedPerPallet) {
+        placedChanged = true
       }
     }
-    // Belt cases drift forward and recycle.
     if (dtSim > 0) {
       const beltSpeed = 0.18
-      for (const bc of beltCasesRef.current) {
-        bc.u += beltSpeed * dtSim
-        if (bc.u > 1.05) bc.u -= 1.2
+      for (const arr of Object.values(beltCasesByConveyor.current)) {
+        for (const bc of arr) {
+          bc.u += beltSpeed * dtSim
+          if (bc.u > 1.05) bc.u -= 1.2
+        }
       }
     }
-    // Trigger React re-render only when placedPerPallet changes.
-    if (prev && stateRef.current.placedPerPallet !== prev.placedPerPallet) {
+    if (placedChanged) {
+      // Aggregate placedPerPallet across all robots for the pallet renderer.
+      const merged: Record<string, number> = {}
+      for (const inst of robotInstances) {
+        const pp = inst.stateRef.current?.placedPerPallet ?? {}
+        for (const [pid, n] of Object.entries(pp)) {
+          merged[pid] = (merged[pid] ?? 0) + n
+        }
+      }
+      placedRef.current = merged
       setVersion((v) => v + 1)
     }
   })
 
+  // Build a per-conveyor "carrying" ref so ConveyorAnimated hides the front
+  // belt case while ITS owner robot is carrying.
+  const conveyorCarryingRef = useRef<Record<string, boolean>>({})
+  useFrame(() => {
+    const next: Record<string, boolean> = {}
+    for (const c of conveyorComps) {
+      const ownerId = conveyorCarrying[c.id]
+      const ownerInst = robotInstances.find((i) => i.robotId === ownerId)
+      next[c.id] = ownerInst?.carryingRef.current ?? false
+    }
+    conveyorCarryingRef.current = next
+  })
+
   return (
     <group>
-      {/* Static fence + operator zone (no animation needed) */}
       {proposal.components
         .filter((c) => c.type === 'fence' || c.type === 'operator_zone')
         .map((c) => renderStaticComponent(c))}
 
-      {/* Robot — wrap in the live pose ref */}
-      {robotComp && armGeom && (
-        <RobotArm armGeom={armGeom} poseRef={armPoseRef} carryingRef={carryingRef} eoatRef={eoatRef}
-          baseR={baseR} reach={reach} modelId={proposal.robot_model_id} />
+      {robotInstances.map(
+        (inst) =>
+          inst.armGeom && (
+            <RobotArm
+              key={inst.robotId}
+              armGeom={inst.armGeom}
+              poseRef={inst.armPoseRef}
+              carryingRef={inst.carryingRef}
+              eoatRef={inst.eoatRef}
+              baseR={inst.baseR}
+              reach={inst.reach}
+              modelId={inst.modelId}
+            />
+          ),
       )}
 
-      {/* Conveyor with moving cases */}
-      {conveyorComp && (
+      {conveyorComps.map((c) => (
         <ConveyorAnimated
-          c={conveyorComp}
+          key={c.id}
+          c={c}
           spec={spec}
-          beltCasesRef={beltCasesRef}
-          carryingRef={carryingRef}
+          beltCasesRef={{
+            current: beltCasesByConveyor.current[c.id] ?? [],
+          } as React.MutableRefObject<{ u: number }[]>}
+          carryingRef={{
+            get current() {
+              return conveyorCarryingRef.current[c.id] ?? false
+            },
+          } as unknown as React.MutableRefObject<boolean>}
         />
-      )}
+      ))}
 
-      {/* Pallets with placed cases (re-renders when version changes) */}
       <PalletsWithPlaced
         key={version}
         proposal={proposal}
         spec={spec}
-        placedPerPallet={stateRef.current?.placedPerPallet ?? {}}
+        placedPerPallet={placedRef.current}
       />
     </group>
   )
 }
 
-function buildCycleConfig(proposal: LayoutProposal, spec: WorkcellSpec): CycleConfig | null {
-  const robot = proposal.components.find((c) => c.type === 'robot')
-  if (!robot) return null
-  const conveyor = proposal.components.find((c) => c.type === 'conveyor')
-  const pallets = proposal.components.filter((c) => c.type === 'pallet')
-  if (!conveyor || pallets.length === 0) return null
+interface RobotInstance {
+  robotId: string
+  modelId: string | null
+  cycleCfg: CycleConfig | null
+  armGeom: ArmGeometry | null
+  baseR: number
+  reach: number
+  phaseOffsetT: number
+  stateRef: React.MutableRefObject<CycleState | null>
+  eoatRef: React.MutableRefObject<THREE.Vector3>
+  carryingRef: React.MutableRefObject<boolean>
+  armPoseRef: React.MutableRefObject<{
+    j1: number
+    elbow: THREE.Vector3
+    wrist: THREE.Vector3
+    hip: THREE.Vector3
+  } | null>
+}
 
-  // Pick point = far end of conveyor (closest to robot, where the belt brings cases).
+function buildRobotInstance(
+  robotComp: PlacedComponent,
+  idx: number,
+  proposal: LayoutProposal,
+  spec: WorkcellSpec,
+  totalRobots: number,
+): RobotInstance {
+  const baseR = ((robotComp.dims.base_radius_mm as number | undefined) ?? 350) * MM_TO_M
+  const reach = ((robotComp.dims.reach_mm as number | undefined) ?? 2400) * MM_TO_M
+  const armGeom: ArmGeometry = {
+    baseWorld: new THREE.Vector3(robotComp.x_mm * MM_TO_M, 0, robotComp.y_mm * MM_TO_M),
+    hipHeight: ROBOT_BASE_HEIGHT + baseR * 0.35,
+    l1: reach * 0.55,
+    l2: reach * 0.55,
+  }
+  const cycleCfg = buildCycleConfigForRobot(robotComp, proposal, spec)
+  // Phase-offset each robot's cycle so they don't move in lockstep.
+  const phaseOffsetT = cycleCfg && totalRobots > 1
+    ? (idx / totalRobots) * cycleCfg.cycleSeconds
+    : 0
+  return {
+    robotId: robotComp.id,
+    modelId: (robotComp.dims.model_id as string | undefined) ?? proposal.robot_model_ids[idx] ?? proposal.robot_model_id ?? null,
+    cycleCfg,
+    armGeom,
+    baseR,
+    reach,
+    phaseOffsetT,
+    stateRef: { current: null } as React.MutableRefObject<CycleState | null>,
+    eoatRef: { current: new THREE.Vector3() } as React.MutableRefObject<THREE.Vector3>,
+    carryingRef: { current: false } as React.MutableRefObject<boolean>,
+    armPoseRef: { current: null } as React.MutableRefObject<{
+      j1: number
+      elbow: THREE.Vector3
+      wrist: THREE.Vector3
+      hip: THREE.Vector3
+    } | null>,
+  }
+}
+
+function buildCycleConfigForRobot(
+  robot: PlacedComponent,
+  proposal: LayoutProposal,
+  spec: WorkcellSpec,
+): CycleConfig | null {
+  // Conveyors + pallets assigned to THIS robot.
+  const assigned = proposal.task_assignment[robot.id]
+  const includes = (id: string) => assigned === undefined || assigned.includes(id)
+  const conveyors = proposal.components.filter(
+    (c) => c.type === 'conveyor' && includes(c.id),
+  )
+  const pallets = proposal.components.filter(
+    (c) => c.type === 'pallet' && includes(c.id),
+  )
+  if (conveyors.length === 0 || pallets.length === 0) return null
+
+  // Pick from the first assigned conveyor.
+  const conveyor = conveyors[0]
   const length = (conveyor.dims.length_mm as number | undefined) ?? 2000
   const width = (conveyor.dims.width_mm as number | undefined) ?? 600
   const isVertical = Math.abs(((conveyor.yaw_deg % 180) + 180) % 180 - 90) < 1e-3
@@ -301,7 +437,6 @@ function buildCycleConfig(proposal: LayoutProposal, spec: WorkcellSpec): CycleCo
     const pw = (p.dims.width_mm as number | undefined) ?? 800
     const cx = (p.x_mm + pl / 2) * MM_TO_M
     const cz = (p.y_mm + pw / 2) * MM_TO_M
-    // Place height = pallet top + half a case (centre), but we lift by stack count in step()
     return { palletId: p.id, basePoint: new THREE.Vector3(cx, PALLET_TOP_Y + caseH / 2, cz) }
   })
 
@@ -311,9 +446,7 @@ function buildCycleConfig(proposal: LayoutProposal, spec: WorkcellSpec): CycleCo
     robot.y_mm * MM_TO_M,
   )
 
-  // Use the proposal's estimated cycle time directly (typically 1.5–4 s).
   const cycleSeconds = Math.max(1.0, proposal.estimated_cycle_time_s)
-
   return {
     cycleSeconds,
     pickPoint: pickWorld,
@@ -323,6 +456,7 @@ function buildCycleConfig(proposal: LayoutProposal, spec: WorkcellSpec): CycleCo
     caseHeight: caseH,
   }
 }
+
 
 // ---------------------------------------------------------------------------
 // Robot arm — drawn from live pose ref each frame.

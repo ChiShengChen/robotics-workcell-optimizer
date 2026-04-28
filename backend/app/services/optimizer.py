@@ -167,10 +167,12 @@ class SAOptimizer:
         self,
         seed_proposal: LayoutProposal,
         spec: WorkcellSpec,
-        robot_spec: RobotSpec | None,
+        robot_spec: RobotSpec | list[RobotSpec] | None,
         on_step: Callable[[int, LayoutProposal, float, float], None] | None = None,
     ) -> tuple[LayoutProposal, SAStats]:
-        """Run SA. on_step receives (iteration, current_proposal, current_score, best_score)."""
+        """Run SA. on_step receives (iteration, current_proposal, current_score, best_score).
+        `robot_spec` accepts a single RobotSpec (single-arm, legacy) or a list (multi-arm).
+        """
         import time
 
         cell_w, cell_h = spec.cell_envelope_mm

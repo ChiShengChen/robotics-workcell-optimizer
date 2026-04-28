@@ -48,23 +48,40 @@ class OptimizeResponse(BaseModel):
 
 
 def _resolve_robot_spec(req: OptimizeRequest):
+    """Single-RobotSpec resolution kept for legacy callers; returns the
+    primary (first) robot. Multi-arm scoring should use _resolve_robot_specs.
+    """
+    specs = _resolve_robot_specs(req)
+    return specs[0] if specs else None
+
+
+def _resolve_robot_specs(req) -> list:
     catalog = get_catalog()
-    robot_id = req.robot_model_id or req.proposal.robot_model_id
-    if robot_id is None:
-        return None
-    try:
-        return catalog.get_by_id(robot_id)
-    except Exception:
-        return None
+    proposal = req.proposal
+    override = getattr(req, "robot_model_id", None)
+    ids: list[str] = []
+    if override:
+        ids = [override]
+    elif proposal.robot_model_ids:
+        ids = list(proposal.robot_model_ids)
+    elif proposal.robot_model_id:
+        ids = [proposal.robot_model_id]
+    out: list = []
+    for rid in ids:
+        try:
+            out.append(catalog.get_by_id(rid))
+        except Exception:
+            pass
+    return out
 
 
 @router.post("", response_model=OptimizeResponse)
 async def optimize(req: OptimizeRequest) -> OptimizeResponse:
-    robot_spec = _resolve_robot_spec(req)
-    seed_score = score_layout(req.proposal, req.spec, robot_spec)
+    robot_specs = _resolve_robot_specs(req)
+    seed_score = score_layout(req.proposal, req.spec, robot_specs)
     sa = SAOptimizer(max_iterations=req.max_iterations, seed=req.seed)
-    optimized, stats = sa.optimize(req.proposal, req.spec, robot_spec)
-    optimized_score = score_layout(optimized, req.spec, robot_spec)
+    optimized, stats = sa.optimize(req.proposal, req.spec, robot_specs)
+    optimized_score = score_layout(optimized, req.spec, robot_specs)
     return OptimizeResponse(
         optimized_proposal=optimized,
         seed_score=seed_score,
@@ -110,22 +127,16 @@ class CPSATOptimizeResponse(BaseModel):
 
 @router.post("/cpsat", response_model=CPSATOptimizeResponse)
 async def optimize_cpsat(req: CPSATOptimizeRequest) -> CPSATOptimizeResponse:
-    robot_spec = None
-    catalog = get_catalog()
-    robot_id = req.robot_model_id or req.proposal.robot_model_id
-    if robot_id is not None:
-        try:
-            robot_spec = catalog.get_by_id(robot_id)
-        except Exception:
-            robot_spec = None
+    robot_specs = _resolve_robot_specs(req)
+    primary_spec = robot_specs[0] if robot_specs else None
 
-    seed_score = score_layout(req.proposal, req.spec, robot_spec)
+    seed_score = score_layout(req.proposal, req.spec, robot_specs)
     refiner = CPSATRefiner(time_limit_s=req.time_limit_s, num_workers=req.num_workers)
     # CP-SAT solve is CPU-bound — push to a worker thread so we don't block the loop.
     refined, stats = await asyncio.to_thread(
-        refiner.refine, req.proposal, req.spec, robot_spec
+        refiner.refine, req.proposal, req.spec, primary_spec
     )
-    optimized_score = score_layout(refined, req.spec, robot_spec)
+    optimized_score = score_layout(refined, req.spec, robot_specs)
     return CPSATOptimizeResponse(
         optimized_proposal=refined,
         seed_score=seed_score,
@@ -144,8 +155,8 @@ async def optimize_cpsat(req: CPSATOptimizeRequest) -> CPSATOptimizeResponse:
 
 @router.post("/stream")
 async def optimize_stream(req: OptimizeRequest) -> StreamingResponse:
-    robot_spec = _resolve_robot_spec(req)
-    seed_score = score_layout(req.proposal, req.spec, robot_spec)
+    robot_specs = _resolve_robot_specs(req)
+    seed_score = score_layout(req.proposal, req.spec, robot_specs)
     queue: asyncio.Queue[bytes | None] = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
@@ -166,9 +177,9 @@ async def optimize_stream(req: OptimizeRequest) -> StreamingResponse:
             sa = SAOptimizer(max_iterations=req.max_iterations, seed=req.seed)
             # SAOptimizer.optimize is sync + CPU-bound; run in a thread.
             optimized, stats = await asyncio.to_thread(
-                sa.optimize, req.proposal, req.spec, robot_spec, on_step,
+                sa.optimize, req.proposal, req.spec, robot_specs, on_step,
             )
-            optimized_score = score_layout(optimized, req.spec, robot_spec)
+            optimized_score = score_layout(optimized, req.spec, robot_specs)
             done_payload = {
                 "optimized_proposal": optimized.model_dump(mode="json"),
                 "seed_score": seed_score.model_dump(mode="json"),
