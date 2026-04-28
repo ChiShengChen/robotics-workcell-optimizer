@@ -1,0 +1,41 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "//": [
+    "Vercel project config for the React + Vite frontend.",
+    "",
+    "Backend is deployed separately on Render (see render.yaml at repo root).",
+    "After Render gives you the backend URL, set this on Vercel:",
+    "    Settings -> Environment Variables ->",
+    "      Name:  VITE_API_URL",
+    "      Value: https://xyz-robotics-backend.onrender.com/api",
+    "      Environments: Production, Preview, Development",
+    "",
+    "Frontend will then call that URL directly. Backend CORS already",
+    "allows any *.vercel.app origin (see backend/app/main.py).",
+    "",
+    "When you connect this repo to Vercel pick:",
+    "    Root Directory:   frontend",
+    "    Framework:        Vite (auto-detected)",
+    "    Build Command:    pnpm install && pnpm build (auto-detected)",
+    "    Output Directory: dist  (auto-detected)",
+    "",
+    "If you DON'T want to expose the backend URL to the browser, leave",
+    "VITE_API_URL unset and uncomment the rewrites block below — Vercel",
+    "will then proxy /api/* server-side. (Adds a Vercel edge hop.)"
+  ],
+
+  "buildCommand": "pnpm install --no-frozen-lockfile && pnpm build",
+  "outputDirectory": "dist",
+  "installCommand": "pnpm install --no-frozen-lockfile",
+  "framework": "vite",
+
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
+      ]
+    }
+  ]
+}

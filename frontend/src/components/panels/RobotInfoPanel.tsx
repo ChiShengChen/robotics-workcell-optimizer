@@ -32,13 +32,13 @@ export function RobotInfoPanel() {
           robots.map((r, idx) => {
             const modelId =
               (r.dims.model_id as string | undefined) ??
-              proposal.robot_model_ids[idx] ??
+              proposal.robot_model_ids?.[idx] ??
               proposal.robot_model_id
             const reach = r.dims.reach_mm as number | undefined
             const eff = r.dims.effective_reach_mm as number | undefined
             const footL = r.dims.footprint_l_mm as number | undefined
             const footW = r.dims.footprint_w_mm as number | undefined
-            const assigned = proposal.task_assignment[r.id]
+            const assigned = proposal.task_assignment?.[r.id]
             return (
               <div key={r.id} className="space-y-1 border-l-2 border-slate-200 pl-2">
                 <div className="flex items-baseline justify-between">

@@ -220,7 +220,7 @@ function AnimatedScene({
     for (const c of conveyorComps) {
       let owner: string | null = null
       for (const rc of robotComps) {
-        const assigned = proposal.task_assignment[rc.id]
+        const assigned = proposal.task_assignment?.[rc.id]
         if (assigned === undefined || assigned.includes(c.id)) {
           owner = rc.id
           break
@@ -379,7 +379,7 @@ function buildRobotInstance(
     : 0
   return {
     robotId: robotComp.id,
-    modelId: (robotComp.dims.model_id as string | undefined) ?? proposal.robot_model_ids[idx] ?? proposal.robot_model_id ?? null,
+    modelId: (robotComp.dims.model_id as string | undefined) ?? proposal.robot_model_ids?.[idx] ?? proposal.robot_model_id ?? null,
     cycleCfg,
     armGeom,
     baseR,
@@ -403,7 +403,7 @@ function buildCycleConfigForRobot(
   spec: WorkcellSpec,
 ): CycleConfig | null {
   // Conveyors + pallets assigned to THIS robot.
-  const assigned = proposal.task_assignment[robot.id]
+  const assigned = proposal.task_assignment?.[robot.id]
   const includes = (id: string) => assigned === undefined || assigned.includes(id)
   const conveyors = proposal.components.filter(
     (c) => c.type === 'conveyor' && includes(c.id),

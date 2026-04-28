@@ -1,3 +1,5 @@
+import os
+
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,9 +14,24 @@ app = FastAPI(
     description="LLM-driven palletizing workcell layout optimizer.",
 )
 
+# CORS: localhost for dev, Vercel preview + production for deployed demo,
+# plus any domains the operator wants to allow via CORS_EXTRA_ORIGINS env
+# var (comma-separated). The Vercel preview pattern matches every PR
+# preview URL (`<project>-<hash>-<team>.vercel.app`).
+_extra = [o.strip() for o in os.getenv("CORS_EXTRA_ORIGINS", "").split(",") if o.strip()]
+_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    *_extra,
+]
+_origin_regex = (
+    r"https://([a-z0-9-]+\.)?vercel\.app"  # Vercel previews + production
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=_origins,
+    allow_origin_regex=_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

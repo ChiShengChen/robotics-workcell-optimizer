@@ -1,0 +1,49 @@
+# Render blueprint — Render auto-detects this file at the repo root
+# and pre-fills the New Web Service wizard.
+#
+# Free tier caveats (see README §"Setup" / Render-specific notes):
+# - 512 MB RAM ceiling. ortools peaks ~150 MB during CP-SAT solves; SA
+#   stays well under. If you only demo SA + LLM extract, this is fine.
+# - Service sleeps after 15 minutes of inactivity. First request after
+#   a sleep cold-starts in 30-50 s. Use UptimeRobot 5-min ping if
+#   reviewers will hit it ad-hoc.
+# - 750 service-hours/month -- enough for one always-on service.
+
+services:
+  - type: web
+    name: xyz-robotics-backend
+    runtime: python
+    rootDir: backend
+    plan: free
+    region: oregon            # cheapest US region; switch to singapore for APAC reviewers
+    branch: main
+    autoDeploy: true          # redeploy on every push to main
+
+    buildCommand: pip install -e .
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+
+    healthCheckPath: /api/health
+
+    envVars:
+      # Pin Python so ortools wheel resolves against the same major.minor.
+      - key: PYTHON_VERSION
+        value: "3.13.7"
+
+      # LLM provider keys — set the actual values in the Render dashboard
+      # under Environment Variables. sync:false marks them as secrets so
+      # they don't get baked into the blueprint.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+
+      # Default LLM routing (override per-call in the request if needed).
+      # Pick whichever provider you have a key for.
+      - key: LLM_DEFAULT_PROVIDER
+        value: gemini
+      - key: LLM_FAST_MODEL
+        value: gemini-2.5-flash
+      - key: LLM_SMART_MODEL
+        value: gemini-2.5-pro

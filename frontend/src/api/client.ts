@@ -15,7 +15,11 @@ import type {
   WorkcellSpec,
 } from './types'
 
-const BASE_URL = '/api'
+// In dev: '/api' is proxied by Vite to localhost:8000 (see vite.config.ts).
+// In prod (Vercel): set VITE_API_URL=https://your-backend.onrender.com/api
+// so the frontend talks to the deployed backend directly. CORS on the
+// backend already allows *.vercel.app origins (see backend/app/main.py).
+const BASE_URL = import.meta.env.VITE_API_URL ?? '/api'
 
 export class ApiError extends Error {
   status: number

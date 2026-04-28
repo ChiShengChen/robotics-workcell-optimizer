@@ -813,6 +813,46 @@ Without an LLM key:
   examples ship with a pre-extracted `WorkcellSpec`, so the demo
   skips `/api/extract` and runs everything else.
 
+## Deployment (Vercel + Render)
+
+Bundled blueprints for a free-tier deployment:
+- [`render.yaml`](render.yaml) — backend Web Service (Python 3.13,
+  `uvicorn app.main:app`, free 512 MB / 0.1 vCPU plan).
+- [`vercel.json`](vercel.json) — frontend Vite static build.
+
+### Backend on Render
+1. **Render Dashboard → New + → Blueprint → connect this GitHub repo.**
+   Render reads `render.yaml` and pre-fills everything; you only need to
+   supply your LLM key(s) in the **Environment Variables** step.
+2. Wait ~5–10 min for the first build (`pip install -e .` pulls
+   ortools / numpy / 3 LLM SDKs).
+3. Hit `https://<your-name>.onrender.com/api/health` → `{"ok":true}`.
+
+Free-tier caveats:
+- Service sleeps after **15 min** of no traffic. First request after a
+  sleep cold-starts in 30–50 s. Use UptimeRobot to ping
+  `/api/health` every 5 min if reviewers will hit it ad hoc.
+- 512 MB RAM ceiling — SA + LLM extract are fine, CP-SAT can spike to
+  ~600 MB during solve and may OOM. If you only demo SA, comment out
+  `ortools` in `pyproject.toml` to drop ~150 MB resident.
+
+### Frontend on Vercel
+1. **Vercel → New Project → import this repo.** Pick **Root Directory:
+   `frontend`** when prompted; everything else is auto-detected from
+   `vercel.json`.
+2. Settings → Environment Variables:
+   - `VITE_API_URL` = `https://<your-render-app>.onrender.com/api`
+   - applies to Production, Preview, Development
+3. Deploy. The frontend at `https://<your-app>.vercel.app` will hit
+   the Render backend directly. Backend CORS already allows any
+   `*.vercel.app` origin via regex (see
+   [`backend/app/main.py`](backend/app/main.py)).
+
+If you'd rather not expose the backend URL to the browser (proxy via
+Vercel edge instead), uncomment the rewrites block in `vercel.json`
+and leave `VITE_API_URL` unset — the frontend then calls relative
+`/api/*` and Vercel rewrites them server-side.
+
 ## Pipeline summary
 
 1. **Extract** — `/api/extract` runs the LLM with two few-shot examples;
