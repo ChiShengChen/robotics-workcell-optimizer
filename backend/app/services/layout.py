@@ -276,6 +276,73 @@ class GreedyLayoutGenerator:
 
     # -- templates ----------------------------------------------------------
 
+    def _pick_alternate_robot(
+        self, spec: WorkcellSpec, primary: RobotSpec
+    ) -> RobotSpec | None:
+        """Find a different catalog model suitable for an inner-position arm.
+
+        Inner arms have shorter travel so we can relax the reach requirement
+        (60% of primary). The alternate must have a footprint within ±25%
+        of primary so the template's pallet/conveyor positions (sized for
+        primary) don't clash with the swapped-in robot.
+        """
+        case_mass = spec.case_mass_kg or DEFAULT_CASE_MASS_KG
+        required_payload = case_mass * DEFAULT_PICK_COUNT + DEFAULT_EOAT_MASS_KG
+        candidates = self.catalog.find(
+            min_payload_kg=required_payload,
+            min_reach_mm=primary.reach_mm * 0.6,
+        )
+        primary_foot = max(primary.footprint_l_mm, primary.footprint_w_mm)
+
+        def footprint_ok(c: RobotSpec) -> bool:
+            f = max(c.footprint_l_mm, c.footprint_w_mm)
+            return 0.75 * primary_foot <= f <= 1.25 * primary_foot
+
+        # First pass: strictly cheaper + footprint-compatible.
+        for c in candidates:
+            if (
+                c.model != primary.model
+                and c.price_usd_high < primary.price_usd_low
+                and footprint_ok(c)
+            ):
+                return c
+        # Second pass: any different + footprint-compatible model in
+        # roughly the same price band.
+        for c in candidates:
+            if (
+                c.model != primary.model
+                and c.price_usd_low <= primary.price_usd_high * 1.2
+                and footprint_ok(c)
+            ):
+                return c
+        return None
+
+    def _pick_arm_robots(
+        self, spec: WorkcellSpec, primary: RobotSpec | None, n_arms: int
+    ) -> list[RobotSpec | None]:
+        """Decide per-arm robot model. Real palletizing cells often pair
+        a fast / longer-reach outer arm with a smaller / cheaper inner arm
+        (the inner arm has shorter travel so doesn't need as much reach,
+        and saving 30-50% on the BOM is meaningful at scale).
+
+        - n_arms <= 2 → homogeneous (primary on both)
+        - n_arms == 3 → primary, alt (inner), primary
+        - n_arms == 4 → alt, alt, primary, primary  (south line uses alt
+                       for the closer, lower-throughput conveyor; north
+                       uses primary)
+        - else → all primary
+        """
+        if primary is None or n_arms <= 2:
+            return [primary] * n_arms
+        alt = self._pick_alternate_robot(spec, primary)
+        if alt is None:
+            return [primary] * n_arms
+        if n_arms == 3:
+            return [primary, alt, primary]
+        if n_arms == 4:
+            return [alt, alt, primary, primary]
+        return [primary] * n_arms
+
     def _build_template(
         self,
         spec: WorkcellSpec,
@@ -302,26 +369,70 @@ class GreedyLayoutGenerator:
         n_robots = sum(1 for c in placed if c.type == "robot")
         is_dual_arm = n_robots >= 2
 
-        cycle_s = (
-            estimate_cycle_time_s(robot, dual_pallet=(template == "dual_pallet"))
-            if robot is not None
-            else 0.0
+        # Heterogeneous arm picking: for 3+ arms, mix the primary robot
+        # with a cheaper alternate at inner positions. Re-stamp the placed
+        # robot components with each arm's actual model + footprint + reach.
+        arm_robots = self._pick_arm_robots(spec, robot, n_robots)
+        is_heterogeneous = (
+            len({r.model for r in arm_robots if r is not None}) > 1
         )
-        # System UPH: parallel arms multiply the single-arm UPH.
-        single_arm_uph = estimate_uph(cycle_s)
-        uph = single_arm_uph * n_robots if is_dual_arm else single_arm_uph
+        if is_heterogeneous:
+            robot_idx = 0
+            for i, c in enumerate(placed):
+                if c.type == "robot" and robot_idx < len(arm_robots):
+                    placed[i] = self._make_robot_placed(
+                        spec, arm_robots[robot_idx], c.x_mm, c.y_mm,
+                        robot_id=c.id,
+                    )
+                    robot_idx += 1
+
+        # Cycle time: when heterogeneous, system UPH = sum across arms;
+        # otherwise single-arm UPH × n.
+        if is_heterogeneous:
+            per_arm_uph = [
+                estimate_uph(estimate_cycle_time_s(ar, dual_pallet=False))
+                if ar is not None else 0.0
+                for ar in arm_robots
+            ]
+            uph = sum(per_arm_uph)
+            cycle_s = max(
+                (estimate_cycle_time_s(ar, dual_pallet=False) for ar in arm_robots if ar),
+                default=0.0,
+            )
+            single_arm_uph = uph / n_robots if n_robots else 0.0
+        else:
+            cycle_s = (
+                estimate_cycle_time_s(robot, dual_pallet=(template == "dual_pallet"))
+                if robot is not None
+                else 0.0
+            )
+            single_arm_uph = estimate_uph(cycle_s)
+            uph = single_arm_uph * n_robots if is_dual_arm else single_arm_uph
 
         assumptions: list[str] = []
         if robot_assumption:
             assumptions.append(robot_assumption)
         if robot is None:
             assumptions.append("No feasible robot — placeholder layout for visualization only.")
-        if is_dual_arm:
+        if is_dual_arm and not is_heterogeneous:
             assumptions.append(
                 f"{n_robots} robots in parallel; system UPH ≈ {uph:.0f} (each arm ~{single_arm_uph:.0f})."
             )
+        if is_heterogeneous:
+            models = ", ".join(ar.model if ar else "?" for ar in arm_robots)
+            assumptions.append(
+                f"Heterogeneous arms ({models}): cheaper alternate at inner "
+                f"positions where travel is shorter; system UPH ≈ {uph:.0f}."
+            )
 
-        robot_ids = [robot.model] * n_robots if robot else []
+        robot_ids = [r.model if r else "" for r in arm_robots] if arm_robots else (
+            [robot.model] * n_robots if robot else []
+        )
+        # Bare-arm cost = sum of midpoint catalogue price across all arms.
+        cost_usd = sum(
+            (ar.price_usd_low + ar.price_usd_high) / 2.0
+            for ar in arm_robots if ar is not None
+        )
         return LayoutProposal(
             proposal_id=str(uuid.uuid4())[:8],
             template=template,
@@ -334,6 +445,7 @@ class GreedyLayoutGenerator:
             estimated_uph=uph,
             rationale=rationale,
             assumptions=assumptions,
+            estimated_cost_usd=cost_usd,
         )
 
     # -- shared placement helpers ------------------------------------------

@@ -162,6 +162,7 @@ export interface LayoutProposal {
   estimated_uph: number
   rationale: string
   assumptions: string[]
+  estimated_cost_usd: number
 }
 
 // ---- Scoring (Phase 4 will populate) --------------------------------------
@@ -189,6 +190,7 @@ export interface ScoreBreakdown {
   aggregate: number
   violations: Violation[]
   weights: Record<string, number>
+  per_robot_utilization: Record<string, number>
 }
 
 // ---- API request/response shapes ------------------------------------------

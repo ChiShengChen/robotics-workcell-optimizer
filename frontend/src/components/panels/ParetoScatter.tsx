@@ -1,7 +1,20 @@
-// Pareto scatter of footprint (m²) vs UPH; non-dominated points highlighted.
+// Pareto scatter — three dimensions encoded in one chart:
+//   X = footprint (m²)        — minimise
+//   Y = system UPH            — maximise
+//   Z = bare-arm cost (USD)   — bubble size, minimise
+// Pareto frontier is computed across all three axes.
 
 import { useMemo } from 'react'
-import { CartesianGrid, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from 'recharts'
+import {
+  CartesianGrid,
+  ResponsiveContainer,
+  Scatter,
+  ScatterChart,
+  Tooltip,
+  XAxis,
+  YAxis,
+  ZAxis,
+} from 'recharts'
 
 import { useLayoutStore } from '@/store/layoutStore'
 
@@ -10,6 +23,7 @@ interface ParetoPoint {
   template: string
   footprint_m2: number
   uph: number
+  cost_usd: number
   pareto: boolean
 }
 
@@ -17,17 +31,29 @@ function computeFootprintM2(cellBounds: [number, number]): number {
   return (cellBounds[0] / 1000) * (cellBounds[1] / 1000)
 }
 
-/** Non-dominated set: minimize footprint AND maximize UPH. A point is on the
- *  Pareto frontier if no other point has BOTH smaller footprint AND larger UPH. */
+/** Non-dominated set across (minimise footprint, maximise UPH, minimise cost).
+ *  A point is on the Pareto frontier if no other point is at least as good
+ *  on every axis AND strictly better on at least one. */
 function computeFrontier(points: Omit<ParetoPoint, 'pareto'>[]): boolean[] {
   return points.map((p, i) =>
-    points.every((q, j) =>
-      j === i ||
-      // q does NOT strictly dominate p
-      !(q.footprint_m2 <= p.footprint_m2 && q.uph >= p.uph &&
-        (q.footprint_m2 < p.footprint_m2 || q.uph > p.uph)),
-    ),
+    points.every((q, j) => {
+      if (j === i) return true
+      const dominates =
+        q.footprint_m2 <= p.footprint_m2 &&
+        q.uph >= p.uph &&
+        q.cost_usd <= p.cost_usd &&
+        (q.footprint_m2 < p.footprint_m2 ||
+          q.uph > p.uph ||
+          q.cost_usd < p.cost_usd)
+      return !dominates
+    }),
   )
+}
+
+function fmtCost(v: number): string {
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(0)}k`
+  return `$${v.toFixed(0)}`
 }
 
 export function ParetoScatter() {
@@ -40,6 +66,7 @@ export function ParetoScatter() {
       template: p.template,
       footprint_m2: computeFootprintM2(p.cell_bounds_mm),
       uph: p.estimated_uph,
+      cost_usd: p.estimated_cost_usd ?? 0,
     }))
     const frontier = computeFrontier(base)
     return base.map((p, i) => ({ ...p, pareto: frontier[i] }))
@@ -51,10 +78,16 @@ export function ParetoScatter() {
   const pareto = data.filter((d) => d.pareto)
   const activePt = data.find((d) => d.id === activeId)
 
+  const minCost = Math.min(...data.map((d) => d.cost_usd))
+  const maxCost = Math.max(...data.map((d) => d.cost_usd))
+
   return (
     <div>
-      <div className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">
-        Pareto · footprint vs UPH
+      <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wide text-slate-500">
+        <span>Pareto · footprint × UPH × cost</span>
+        <span className="text-[9px] normal-case tracking-normal text-slate-400">
+          bubble size = cost ({fmtCost(minCost)}–{fmtCost(maxCost)})
+        </span>
       </div>
       <div className="h-32">
         <ResponsiveContainer width="100%" height="100%">
@@ -66,7 +99,12 @@ export function ParetoScatter() {
               name="footprint"
               unit=" m²"
               tick={{ fontSize: 9 }}
-              label={{ value: 'footprint (m²)', position: 'insideBottom', offset: -2, fontSize: 9 }}
+              label={{
+                value: 'footprint (m²)',
+                position: 'insideBottom',
+                offset: -2,
+                fontSize: 9,
+              }}
             />
             <YAxis
               type="number"
@@ -75,15 +113,29 @@ export function ParetoScatter() {
               tick={{ fontSize: 9 }}
               width={40}
             />
+            <ZAxis
+              type="number"
+              dataKey="cost_usd"
+              range={[40, 400]}
+              name="cost"
+            />
             <Tooltip
               cursor={{ strokeDasharray: '3 3' }}
               contentStyle={{ fontSize: 11 }}
-              formatter={(v) => (typeof v === 'number' ? v.toFixed(1) : String(v))}
+              formatter={(v, name) => {
+                if (typeof v !== 'number') return String(v)
+                if (name === 'cost') return fmtCost(v)
+                if (name === 'UPH') return v.toFixed(0)
+                if (name === 'footprint') return `${v.toFixed(1)} m²`
+                return v.toFixed(1)
+              }}
               labelFormatter={() => ''}
             />
-            <Scatter data={dominated} fill="#94a3b8" />
-            <Scatter data={pareto} fill="#0d9488" />
-            {activePt && <Scatter data={[activePt]} fill="#3b82f6" shape="star" />}
+            <Scatter data={dominated} fill="#94a3b8" fillOpacity={0.55} />
+            <Scatter data={pareto} fill="#0d9488" fillOpacity={0.85} />
+            {activePt && (
+              <Scatter data={[activePt]} fill="#3b82f6" shape="star" />
+            )}
           </ScatterChart>
         </ResponsiveContainer>
       </div>

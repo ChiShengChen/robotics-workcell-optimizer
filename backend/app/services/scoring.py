@@ -316,6 +316,7 @@ def score_cycle_efficiency(
 
     per_robot_cycles: list[float] = []
     per_robot_uph: list[float] = []
+    per_robot_util: dict[str, float] = {}
     n_pallets_total = sum(1 for c in proposal.components if c.type == "pallet")
 
     for i, robot_pc in enumerate(robots):
@@ -345,19 +346,38 @@ def score_cycle_efficiency(
         uph = 3600.0 / cycle_s if cycle_s > 0 else 0.0
         per_robot_cycles.append(cycle_s)
         per_robot_uph.append(uph)
+        # Utilisation = required cycles per hour / catalogue max cycles per
+        # hour. Capped at 1.0 in the gauge but we report the raw ratio so
+        # >1.0 means "this robot is the bottleneck and can't keep up".
+        # Required cycles for this robot = system load / n_robots from target.
+        per_robot_util[robot_pc.id] = (
+            (target_uph / max(1, len(robots))) / rspec.cycles_per_hour_std
+            if rspec.cycles_per_hour_std > 0 else 0.0
+        )
 
     if not per_robot_cycles:
-        return {"score": 0.0, "estimated_cycle_s": 0.0, "estimated_uph": 0.0}
+        return {
+            "score": 0.0, "estimated_cycle_s": 0.0, "estimated_uph": 0.0,
+            "per_robot_utilization": {},
+        }
 
     # Worst single-robot cycle = bottleneck for "estimated_cycle_s" display.
     bottleneck_cycle = max(per_robot_cycles)
     system_uph = sum(per_robot_uph)
 
     if target_uph <= 0:
-        return {"score": 1.0, "estimated_cycle_s": bottleneck_cycle, "estimated_uph": system_uph}
+        return {
+            "score": 1.0, "estimated_cycle_s": bottleneck_cycle,
+            "estimated_uph": system_uph,
+            "per_robot_utilization": per_robot_util,
+        }
     ratio = system_uph / target_uph
     score = _clamp(min(ratio, 1.1) / 1.1)
-    return {"score": score, "estimated_cycle_s": bottleneck_cycle, "estimated_uph": system_uph}
+    return {
+        "score": score, "estimated_cycle_s": bottleneck_cycle,
+        "estimated_uph": system_uph,
+        "per_robot_utilization": per_robot_util,
+    }
 
 
 def score_safety_clearance(proposal: LayoutProposal, spec: WorkcellSpec) -> dict:
@@ -732,6 +752,7 @@ def score_layout(
         aggregate=_clamp(aggregate),
         violations=violations,
         weights=dict(w),
+        per_robot_utilization=cycle.get("per_robot_utilization", {}),
     )
 
 

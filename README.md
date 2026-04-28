@@ -871,7 +871,77 @@ For single-arm legacy proposals with empty `task_assignment`, the validator
 falls back to checking against any robot — so the best margin wins and we
 don't penalise targets that one of the arms can reach.
 
-## 20. 3D pallet stack wrap
+## 20. Per-robot utilization gauge
+
+**Files**: [`backend/app/services/scoring.py`](backend/app/services/scoring.py)
+`score_cycle_efficiency`,
+[`frontend/src/components/panels/RobotInfoPanel.tsx`](frontend/src/components/panels/RobotInfoPanel.tsx)
+
+`ScoreBreakdown.per_robot_utilization: dict[str, float]` reports each
+arm's load ratio = `(target_uph / n_robots) / cycles_per_hour_std`. The
+RobotInfoPanel renders this as a colour-coded bar gauge:
+
+| Range  | Colour | Meaning                              |
+|--------|--------|--------------------------------------|
+| 0–50%  | sky    | Spare headroom                        |
+| 50–85% | green  | Healthy                               |
+| 85–100%| amber  | Near capacity                         |
+| > 100% | red    | Bottleneck — can't sustain its share  |
+
+Heterogeneous arms (§21) pull catalogue cycles_per_hour from each arm's
+own RobotSpec, so the gauges correctly show the cheap inner arm running
+hotter than the bigger outer ones.
+
+## 21. Heterogeneous arm selection
+
+**File**: [`backend/app/services/layout.py`](backend/app/services/layout.py)
+`_pick_alternate_robot` + `_pick_arm_robots`
+
+Real palletizing cells often pair a fast / longer-reach **outer** arm
+with a smaller / cheaper **inner** arm. Inner arms have shorter travel
+so the relaxed reach (60% of primary) lets a 30–50% cheaper model fit.
+The greedy generator now does this automatically:
+
+| Template               | Arm assignment                  |
+|------------------------|---------------------------------|
+| `dual_arm_dual_pallet` | `[primary, primary]` (homogeneous) |
+| `triple_arm_tandem`    | `[primary, alt, primary]` (alt at inner) |
+| `quad_arm_dual_line`   | `[alt, alt, primary, primary]` (south line uses cheaper alt) |
+
+The alternate must have a footprint within ±25% of primary so the
+template's pre-placed pallets / conveyors don't clash with the swapped
+robot. If no such alternate exists, falls back to homogeneous.
+
+`robot_model_ids` reflects the per-arm models exactly. Scoring picks
+the right RobotSpec per arm (already supported via
+`list[RobotSpec] | RobotSpec | None`). The "Heterogeneous arms (...)"
+note is appended to `proposal.assumptions` so the user sees which
+models were paired.
+
+## 22. Pareto explorer with cost axis
+
+**Files**: [`backend/app/schemas/layout.py`](backend/app/schemas/layout.py)
+(`estimated_cost_usd`),
+[`frontend/src/components/panels/ParetoScatter.tsx`](frontend/src/components/panels/ParetoScatter.tsx)
+
+Three dimensions encoded in one chart:
+
+- **X = footprint (m²)** — minimise
+- **Y = system UPH** — maximise
+- **Z = bare-arm cost (USD)** — bubble size, minimise
+
+`LayoutProposal.estimated_cost_usd` = sum of midpoint catalogue price
+(`(price_usd_low + price_usd_high) / 2`) across every arm. Real cell
+cost is ~1.5–2× this once integration / EOAT / vision / safety fence
+are added, but the bare-arm ratio is what makes proposals comparable.
+
+The Pareto frontier now considers all three axes — a point is
+non-dominated only if no other point matches or beats it on every axis
+AND strictly beats it on at least one. So a layout with smaller
+footprint AND higher UPH AND lower cost is the only "uniformly better"
+case; otherwise the trade-off lives on the frontier.
+
+## 23. 3D pallet stack wrap
 
 **File**: [`frontend/src/lib/cycleAnimation.ts`](frontend/src/lib/cycleAnimation.ts)
 

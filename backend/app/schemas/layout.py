@@ -79,6 +79,17 @@ class LayoutProposal(BaseModel):
         default_factory=list,
         description="Layout-level assumptions (e.g. 'budget relaxed by $25k to find a feasible arm').",
     )
+    estimated_cost_usd: float = Field(
+        default=0.0,
+        description=(
+            "Total bare-arm BOM = sum of midpoint catalogue price across "
+            "all arms. Real cell cost is ~1.5–2× this once integration / "
+            "EOAT / vision / safety fence are added — but the bare-arm "
+            "ratio is what makes proposals comparable. Used as the third "
+            "axis (bubble size) in the Pareto explorer."
+        ),
+        ge=0,
+    )
 
 
 class Violation(BaseModel):
@@ -120,4 +131,13 @@ class ScoreBreakdown(BaseModel):
     violations: list[Violation] = Field(default_factory=list, description="All violations found.")
     weights: dict[str, float] = Field(
         default_factory=dict, description="Weights used for aggregation (for transparency)."
+    )
+    per_robot_utilization: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Maps robot.id -> utilization ratio in [0, ∞). "
+            "Computed as (target_uph / n_robots) / cycles_per_hour_std. "
+            "0.0–1.0 = robot has spare headroom; > 1.0 = robot is the "
+            "bottleneck and can't sustain its share. UI renders as bar gauge."
+        ),
     )
