@@ -447,6 +447,10 @@ Pareto frontier.
 **File**: [`frontend/src/components/canvas/VariantsStrip.tsx`](frontend/src/components/canvas/VariantsStrip.tsx),
 [`frontend/src/components/canvas/CompareSheet.tsx`](frontend/src/components/canvas/CompareSheet.tsx)
 
+- **Variants selector** (1–6, persisted to localStorage): dropdown next
+  to the "Generate Layout" button controls how many proposals come back
+  from `/api/generate-layout` (`n_variants`). Larger values surface
+  multi-arm templates even when not biased to the front (see §17).
 - **Variants strip**: 200×130 px Konva mini-canvases below the main
   canvas, one per proposal. Click to switch active. Each shows a
   badge with the score (or UPH if not yet scored).
@@ -455,6 +459,10 @@ Pareto frontier.
   variety of templates over time.
 - **Compare sheet** (shadcn `Sheet`): table of all proposals with
   every sub-score column. Click a row to make it active.
+- **Stale-id rescue**: `onRehydrateStorage` snaps `activeProposalId` back
+  to `proposals[0]` when the persisted id no longer matches any current
+  proposal (e.g. template bias shifted across deploys), so the canvas
+  never gets stuck on a phantom selection.
 
 ## 12. Stacking pattern visualizer
 
@@ -689,17 +697,27 @@ fallback is the next move.
 as gray polygons in the 2D Konva canvas (closed = filled, open = wall)
 and as semi-transparent **1.5 m extruded walls** in the 3D preview.
 
-## 17. Multi-arm support (dual-arm dual-pallet)
+## 17. Multi-arm support (dual / triple / quad)
 
 **Files**: [`backend/app/services/layout.py`](backend/app/services/layout.py),
 [`backend/app/services/scoring.py`](backend/app/services/scoring.py),
 [`frontend/src/components/canvas/Workcell3DCanvas.tsx`](frontend/src/components/canvas/Workcell3DCanvas.tsx)
 
-**What it does**: when target throughput exceeds what one robot can sustain
-(`cph_target >= 1500`), the greedy generator biases a `dual_arm_dual_pallet`
-template — two robots in parallel, each with its own infeed conveyor and
-outboard pallet. System UPH ≈ 2× single-arm. Most common high-throughput
-palletizing configuration in real food / beverage lines.
+**What it does**: throughput-keyed bias surfaces 2/3/4-arm topologies when one
+robot can't keep up. The greedy generator chooses the lead template by `cph`:
+
+| `cph_target` | Lead template            | Arms | Typical use case          |
+|--------------|--------------------------|------|---------------------------|
+| `≥ 4000`     | `quad_arm_dual_line`     | 4    | Mega beverage / 2 lines   |
+| `≥ 2500`     | `triple_arm_tandem`      | 3    | Tandem food/beverage      |
+| `≥ 1500`     | `dual_arm_dual_pallet`   | 2    | Most common high-tput cell |
+| `< 1500`     | single-arm `dual_pallet` | 1    | Default                    |
+
+All multi-arm templates are also **always appended to the candidate pool when
+cph ≥ 1500** so a larger Variants selector (1–6, see §11) surfaces them even
+when not biased to the front. The `Variants` dropdown next to "Generate
+Layout" controls how many proposals come back; the value is persisted to
+localStorage so the choice survives reloads.
 
 ### 17a. Schema
 - `LayoutProposal.robot_model_ids: list[str]` — one entry per robot
@@ -707,20 +725,40 @@ palletizing configuration in real food / beverage lines.
 - `LayoutProposal.task_assignment: dict[str, list[str]]` — maps
   `robot.id -> [pallet_id, conveyor_id, …]` it owns. Empty dict =
   single-arm convention (every robot serves every pallet + conveyor).
-- New template literal `dual_arm_dual_pallet`.
+- Template literals: `dual_arm_dual_pallet`, `triple_arm_tandem`,
+  `quad_arm_dual_line`.
 
-### 17b. Greedy `dual_arm_dual_pallet` template
-- Robots placed at ~30% and ~70% of cell width, ensuring their reach
-  envelopes don't overlap.
-- Two short infeed conveyors (`conveyor_1` / `conveyor_2`) feeding from
-  the south, one per robot.
-- Pallets outboard (`pallet_1` west of `robot_1`, `pallet_2` east of
-  `robot_2`) so they don't compete for floor space.
-- Single fence wraps both reach envelopes; one operator zone on the
-  open north side, between the robots.
+### 17b. Greedy templates
+**`dual_arm_dual_pallet`** (2 arms)
+- Robots at ~30% and ~70% of cell width — disjoint reach envelopes.
+- Two short infeed conveyors south, one per robot; pallets outboard
+  (west of robot_1, east of robot_2).
+- Single fence wraps both envelopes; one operator zone north.
 - `task_assignment = {robot_1: [pallet_1, conveyor_1], robot_2:
-  [pallet_2, conveyor_2]}` — no shared workspace, so **no motion
-  coordination required** (the deliberately-easy case).
+  [pallet_2, conveyor_2]}` — no shared workspace.
+
+**`triple_arm_tandem`** (3 arms)
+- Robots at 1/6, 3/6, 5/6 of cell width along the long axis.
+- Each robot has its own infeed segment to the south + outboard
+  pallet to the north (classic 180° pick-then-place palletizing
+  motion).
+- Fence is widened to wrap all three reach envelopes AND the pallet
+  row that extends north of the robots.
+- System UPH ≈ 3× single-arm. Common in food / beverage tandem lines
+  (Coca-Cola style).
+
+**`quad_arm_dual_line`** (4 arms)
+- Robots in a 2×2 grid (left/right at 30%/70% of cell width, north/south
+  at 70%/30% of cell height).
+- All 4 conveyors south of their respective robot — two parallel infeed
+  lines, two arms per line.
+- `task_assignment` partitions one pallet + one conveyor per arm.
+- System UPH ≈ 4× single-arm. Mega-throughput beverage / canned food.
+
+All multi-arm templates use `_ARMS_PER_TEMPLATE` to scale per-robot
+throughput requirements (each arm only needs `cph_target / n_arms`),
+so robot selection finds candidates that wouldn't pass the full
+target alone.
 
 ### 17c. Per-robot scoring
 - `score_reach_margin` and `score_cycle_efficiency` accept
@@ -794,6 +832,58 @@ These three are deliberate scope cuts for the take-home:
   The current configuration is genuinely the most common
   high-throughput dual-arm layout in production palletizing today
   precisely because it sidesteps motion coordination entirely.
+
+## 18. Operator zone safety checks (ISO 10218 spirit)
+
+**Files**: [`backend/app/services/scoring.py`](backend/app/services/scoring.py)
+`_check_operator_zone()`,
+[`frontend/src/lib/validation.ts`](frontend/src/lib/validation.ts)
+
+Three rules per `operator_zone` placed in the layout, all SOFT (warning,
+not aggregate-killing — the greedy seeds intentionally place the operator
+near the robot row to visualise the access lane, and real cells gate that
+lane with a light curtain + safe-state interlock):
+
+| Rule | Check | Exempt with light curtain? |
+|------|-------|----------------------------|
+| **A. Body overlap** | `operator_zone` AABB must not overlap any `robot` / `conveyor` / `pallet` | no |
+| **B. Reach intrusion** | Operator must not lie inside any robot's `effective_reach_mm` disk | yes (`fence.has_light_curtain=true`) |
+| **C. Fence work-room** | Operator must keep ≥ 600 mm from the safety fence polyline | yes |
+
+Violations show on the canvas as a red border + `OPERATOR` badge on the
+operator zone itself (and on the implicated body for rule A). The frontend
+validator mirrors the backend check exactly so the badge updates live as
+the user drags the operator zone, with no `/api/score` round-trip.
+
+## 19. Per-robot reach validation (multi-arm canvas)
+
+**File**: [`frontend/src/lib/validation.ts`](frontend/src/lib/validation.ts)
+
+The client-side `validateLayout()` now reads `proposal.task_assignment` and
+checks each pick/place target only against its **assigned** robot(s). Without
+this, a triple-arm tandem layout would plaster `REACH` badges over every
+right-side conveyor / pallet because `robot_1` (sitting on the far left)
+obviously couldn't reach `pallet_2` or `pallet_3`. Backend `score_layout`
+was already correct via per-robot reach margin; this just brings the canvas
+in sync.
+
+For single-arm legacy proposals with empty `task_assignment`, the validator
+falls back to checking against any robot — so the best margin wins and we
+don't penalise targets that one of the arms can reach.
+
+## 20. 3D pallet stack wrap
+
+**File**: [`frontend/src/lib/cycleAnimation.ts`](frontend/src/lib/cycleAnimation.ts)
+
+Each pallet has a `maxPerPallet` cap (computed from the same `buildStack()`
+the renderer uses). When the place count would exceed the cap, the count
+wraps to 0 — simulating a full pallet being rolled out and a fresh empty
+one rolling in. Without this, in 3-arm / 4-arm templates each robot owns
+one pallet and `placedPerPallet[id]` would grow forever; the renderer
+caps visible cases at the rendered stack capacity (~40 boxes), so once
+the count crossed the cap, no more boxes appeared even though the arms
+kept cycling. The place point Y also climbed each cycle, sending the
+EOAT into the air. Wrap fixes both.
 
 ---
 
