@@ -109,6 +109,12 @@ export interface CadImportResponse {
   n_entities_skipped: number
 }
 
+export interface CadSample {
+  id: string
+  label: string
+  description: string
+}
+
 export interface WorkcellSpec {
   schema_version: '1.0'
   cell_envelope_mm: [number, number]

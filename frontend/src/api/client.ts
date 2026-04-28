@@ -2,6 +2,7 @@
 
 import type {
   CadImportResponse,
+  CadSample,
   CPSATOptimizeRequest,
   CPSATOptimizeResponse,
   ExampleSpec,
@@ -100,6 +101,16 @@ export const api = {
 
   examples: (signal?: AbortSignal) =>
     request<ExampleSpec[]>('/examples', { method: 'GET', signal }),
+
+  cadSamples: (signal?: AbortSignal) =>
+    request<CadSample[]>('/cad/samples', { method: 'GET', signal }),
+
+  loadCadSample: (id: string, signal?: AbortSignal) =>
+    request<CadImportResponse>('/cad/load-sample', {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+      signal,
+    }),
 
   importDxf: async (
     file: File,

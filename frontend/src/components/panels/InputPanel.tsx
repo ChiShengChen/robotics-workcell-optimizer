@@ -1,10 +1,10 @@
 // Prompt textarea + Extract / Generate buttons + Load Example dropdown.
 
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, Loader2, Map, Sparkles, Wand2, Workflow, X } from 'lucide-react'
+import { ChevronDown, Layers, Loader2, Map, Sparkles, Wand2, Workflow, X } from 'lucide-react'
 
 import { api } from '@/api/client'
-import type { ExampleSpec } from '@/api/types'
+import type { CadSample, ExampleSpec } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
@@ -21,12 +21,16 @@ export function InputPanel() {
   const runGenerate = useLayoutStore((s) => s.runGenerate)
   const loadExample = useLayoutStore((s) => s.loadExample)
   const importCadFloorPlan = useLayoutStore((s) => s.importCadFloorPlan)
+  const loadCadSample = useLayoutStore((s) => s.loadCadSample)
   const clearObstacles = useLayoutStore((s) => s.clearObstacles)
   const obstacleCount = useLayoutStore((s) => s.spec?.obstacles?.length ?? 0)
 
   const [examples, setExamples] = useState<ExampleSpec[]>([])
+  const [cadSamples, setCadSamples] = useState<CadSample[]>([])
   const [loadingId, setLoadingId] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
+  const [cadOpen, setCadOpen] = useState(false)
+  const [loadingSampleId, setLoadingSampleId] = useState<string | null>(null)
   const [importingCad, setImportingCad] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -35,6 +39,9 @@ export function InputPanel() {
     api.examples().then((xs) => {
       if (alive) setExamples(xs)
     }).catch(() => { /* examples are optional */ })
+    api.cadSamples().then((xs) => {
+      if (alive) setCadSamples(xs)
+    }).catch(() => { /* cad samples are optional */ })
     return () => { alive = false }
   }, [])
 
@@ -98,6 +105,58 @@ export function InputPanel() {
             }}
           />
         </div>
+
+        {cadSamples.length > 0 && (
+          <div className="relative">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="w-full justify-between"
+              onClick={() => setCadOpen((v) => !v)}
+              disabled={loadingSampleId !== null}
+            >
+              <span className="flex items-center gap-1">
+                <Layers className="h-3.5 w-3.5" />
+                Try a sample floor plan…
+              </span>
+              <ChevronDown className="h-3.5 w-3.5" />
+            </Button>
+            {cadOpen && (
+              <ul
+                className="absolute z-20 mt-1 w-full overflow-hidden rounded border border-slate-200 bg-white shadow-md"
+                onMouseLeave={() => setCadOpen(false)}
+              >
+                {cadSamples.map((s) => (
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      className="block w-full px-2 py-1.5 text-left text-xs hover:bg-slate-50 disabled:opacity-50"
+                      disabled={loadingSampleId !== null}
+                      onClick={async () => {
+                        setLoadingSampleId(s.id)
+                        setCadOpen(false)
+                        try {
+                          await loadCadSample(s.id)
+                        } finally {
+                          setLoadingSampleId(null)
+                        }
+                      }}
+                    >
+                      <div className="flex items-center gap-1 font-medium text-slate-700">
+                        {loadingSampleId === s.id && (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        )}
+                        {s.label}
+                      </div>
+                      <div className="text-[10px] text-slate-500">{s.description}</div>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         {examples.length > 0 && (
           <div className="relative">
