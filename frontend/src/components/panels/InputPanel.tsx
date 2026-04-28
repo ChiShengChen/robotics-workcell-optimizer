@@ -20,6 +20,8 @@ export function InputPanel() {
   const spec = useLayoutStore((s) => s.spec)
   const runExtract = useLayoutStore((s) => s.runExtract)
   const runGenerate = useLayoutStore((s) => s.runGenerate)
+  const nVariants = useLayoutStore((s) => s.nVariants)
+  const setNVariants = useLayoutStore((s) => s.setNVariants)
   const loadExample = useLayoutStore((s) => s.loadExample)
   const importCadFloorPlan = useLayoutStore((s) => s.importCadFloorPlan)
   const loadCadSample = useLayoutStore((s) => s.loadCadSample)
@@ -300,19 +302,40 @@ export function InputPanel() {
           className="resize-y text-xs"
         />
         <div className="flex flex-col gap-2">
-          <Button
-            onClick={() => void runGenerate()}
-            disabled={isGenerating || !spec}
-            className="w-full"
-            size="sm"
-          >
-            {isGenerating ? (
-              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Workflow className="mr-1 h-3.5 w-3.5" />
-            )}
-            Generate Layout
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              onClick={() => void runGenerate()}
+              disabled={isGenerating || !spec}
+              className="flex-1"
+              size="sm"
+            >
+              {isGenerating ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Workflow className="mr-1 h-3.5 w-3.5" />
+              )}
+              Generate Layout
+            </Button>
+            <div className="flex items-center gap-1.5 rounded-md border border-input bg-background px-2 text-xs">
+              <Label htmlFor="n-variants" className="text-muted-foreground">
+                Variants
+              </Label>
+              <select
+                id="n-variants"
+                value={nVariants}
+                onChange={(e) => setNVariants(Number(e.target.value))}
+                disabled={isGenerating}
+                className="h-7 cursor-pointer bg-transparent text-xs font-medium outline-none"
+                title="How many layout proposals to generate (1-6)."
+              >
+                {[1, 2, 3, 4, 5, 6].map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
           <Button
             onClick={() => void runExtract()}
             disabled={isExtracting || prompt.trim().length === 0}

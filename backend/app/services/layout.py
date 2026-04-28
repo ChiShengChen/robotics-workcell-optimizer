@@ -139,18 +139,26 @@ class GreedyLayoutGenerator:
         templates: list[Template] = ["in_line", "L_shape", "U_shape", "dual_pallet"]
         is_continuous = self._is_continuous_op(spec)
         cph = spec.throughput.cases_per_hour_target
-        # Bias multi-arm templates by throughput. Thresholds match the README §17:
-        #   ≥ 5000 cph → quad-arm 2x2 lines
-        #   ≥ 3500 cph → triple-arm tandem
-        #   ≥ 1500 cph → dual-arm
-        if cph >= 5000:
+        # Bias multi-arm templates by throughput. Lowered thresholds (vs. the
+        # original README §17 spec) so users who ask for "high throughput"
+        # without naming a number still see multi-arm options:
+        #   ≥ 4000 cph → quad-arm first
+        #   ≥ 2500 cph → triple-arm first
+        #   ≥ 1500 cph → dual-arm first
+        # Multi-arm templates are always appended to the candidate pool when
+        # cph ≥ 1500 so larger n_variants surfaces them even when not biased
+        # to the front.
+        if cph >= 4000:
             templates = ["quad_arm_dual_line", "triple_arm_tandem",
-                         "dual_arm_dual_pallet", "dual_pallet"]
-        elif cph >= 3500:
+                         "dual_arm_dual_pallet", "dual_pallet",
+                         "L_shape", "in_line"]
+        elif cph >= 2500:
             templates = ["triple_arm_tandem", "dual_arm_dual_pallet",
-                         "quad_arm_dual_line", "dual_pallet"]
+                         "quad_arm_dual_line", "dual_pallet",
+                         "L_shape", "in_line"]
         elif cph >= 1500:
             templates = ["dual_arm_dual_pallet", "dual_pallet",
+                         "triple_arm_tandem", "quad_arm_dual_line",
                          "L_shape", "in_line"]
         elif is_continuous:
             templates = ["dual_pallet", "dual_arm_dual_pallet",

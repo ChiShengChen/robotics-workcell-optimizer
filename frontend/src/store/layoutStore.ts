@@ -52,8 +52,10 @@ interface LayoutState {
   lastOptimization: OptimizeResponse | null
   lastCPSAT: CPSATOptimizeResponse | null
   isCPSATRunning: boolean
+  nVariants: number
 
   setPrompt: (s: string) => void
+  setNVariants: (n: number) => void
   setSelection: (sel: Selection) => void
   clearErrors: () => void
   runExtract: () => Promise<void>
@@ -164,8 +166,10 @@ export const useLayoutStore = create<LayoutState>()(
       lastOptimization: null,
       lastCPSAT: null,
       isCPSATRunning: false,
+      nVariants: 3,
 
       setPrompt: (s) => set({ prompt: s }),
+      setNVariants: (n) => set({ nVariants: Math.max(1, Math.min(6, Math.round(n))) }),
       setSelection: (selection) => set({ selection }),
       clearErrors: () => set({ errors: [] }),
 
@@ -198,7 +202,7 @@ export const useLayoutStore = create<LayoutState>()(
         try {
           // temperature is passed to /api/generate-layout for future LLM-driven
           // diversity; the greedy generator currently ignores it.
-          const newProposals = await api.generateLayout({ spec, n_variants: 3 })
+          const newProposals = await api.generateLayout({ spec, n_variants: get().nVariants })
           const existing = _temperature !== undefined ? get().proposals : []
           const combined = [...existing, ...newProposals]
           set({
@@ -581,6 +585,7 @@ export const useLayoutStore = create<LayoutState>()(
         spec: state.spec,
         proposals: state.proposals,
         activeProposalId: state.activeProposalId,
+        nVariants: state.nVariants,
       }),
     },
   ),
