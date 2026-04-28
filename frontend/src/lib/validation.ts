@@ -25,11 +25,19 @@ export function iso13855SafetyDistanceMm(hasHardGuard: boolean): number {
 
 export interface ComponentViolation {
   componentId: string
-  kind: 'overlap' | 'unreachable' | 'fence_clearance' | 'outside_envelope' | 'obstacle_intrusion'
+  kind:
+    | 'overlap'
+    | 'unreachable'
+    | 'fence_clearance'
+    | 'outside_envelope'
+    | 'obstacle_intrusion'
+    | 'operator_zone_intrusion'
   partnerId?: string
   marginMm?: number
   message: string
 }
+
+const OPERATOR_FENCE_CLEARANCE_MM = 600
 
 export interface ValidationResult {
   perComponent: Map<string, ComponentViolation[]>
@@ -187,19 +195,90 @@ export function validateLayout(
     }
   }
 
-  // 4. Operator zone intrusion: any body bbox touches the operator rect.
+  // 4. Operator zone intrusion (mirror backend _check_operator_zone):
+  //    A. HARD — any robot/conveyor/pallet bbox overlaps the operator rect.
+  //    B. HARD — operator sits inside any robot's effective_reach disk
+  //       (exempt if the cell has a light curtain).
+  //    C. SOFT — operator < 600 mm from the fence (work-room clearance).
+  //       Also exempt with a light curtain.
   let operatorIntrusion = false
   if (operator) {
     const opRect = componentRect(operator)
+    const hasCurtain = Boolean(
+      (fence?.dims.has_light_curtain as boolean | undefined) ||
+        spec.components.some((c) => c.type === 'fence' && c.has_light_curtain),
+    )
+    // A — body overlap.
     for (const c of bodies) {
       if (aabbOverlap(componentRect(c), opRect)) {
         operatorIntrusion = true
+        push(operator.id, {
+          componentId: operator.id,
+          kind: 'operator_zone_intrusion',
+          partnerId: c.id,
+          message: `Operator zone overlaps ${c.id}`,
+        })
         push(c.id, {
           componentId: c.id,
-          kind: 'overlap',
+          kind: 'operator_zone_intrusion',
           partnerId: operator.id,
           message: `Intrudes into operator zone`,
         })
+      }
+    }
+    // B — operator inside a robot's effective reach.
+    if (!hasCurtain) {
+      const corners = [
+        { x: opRect.x, y: opRect.y },
+        { x: opRect.x + opRect.w, y: opRect.y },
+        { x: opRect.x, y: opRect.y + opRect.h },
+        { x: opRect.x + opRect.w, y: opRect.y + opRect.h },
+        { x: opRect.x + opRect.w / 2, y: opRect.y + opRect.h / 2 },
+      ]
+      for (const r of robots) {
+        const eff =
+          ((r.dims.effective_reach_mm as number | undefined) ??
+            (r.dims.reach_mm as number | undefined) ??
+            0) * 1
+        if (eff <= 0) continue
+        const closest = Math.min(
+          ...corners.map((p) => Math.hypot(p.x - r.x_mm, p.y - r.y_mm)),
+        )
+        if (closest < eff) {
+          operatorIntrusion = true
+          const penetration = eff - closest
+          push(operator.id, {
+            componentId: operator.id,
+            kind: 'operator_zone_intrusion',
+            partnerId: r.id,
+            marginMm: -penetration,
+            message: `Inside ${r.id}'s reach (penetration ${penetration.toFixed(0)} mm)`,
+          })
+          break
+        }
+      }
+    }
+    // C — operator fence clearance (soft).
+    if (fence && !hasCurtain) {
+      const poly = (fence.dims.polyline as number[][] | undefined) ?? []
+      if (poly.length >= 2) {
+        const c = [
+          { x: opRect.x, y: opRect.y },
+          { x: opRect.x + opRect.w, y: opRect.y },
+          { x: opRect.x + opRect.w, y: opRect.y + opRect.h },
+          { x: opRect.x, y: opRect.y + opRect.h },
+        ]
+        const d = Math.min(...c.map((p) => distToPolyline(p, poly)))
+        const slack = d - OPERATOR_FENCE_CLEARANCE_MM
+        if (slack < 0) {
+          push(operator.id, {
+            componentId: operator.id,
+            kind: 'operator_zone_intrusion',
+            partnerId: fence.id,
+            marginMm: slack,
+            message: `Fence clearance short by ${(-slack).toFixed(0)} mm (need ≥ ${OPERATOR_FENCE_CLEARANCE_MM} mm)`,
+          })
+        }
       }
     }
   }
@@ -331,12 +410,20 @@ function segmentsIntersect(a1: Point, a2: Point, b1: Point, b2: Point): boolean 
 
 export function topViolationLabel(v: ComponentViolation[]): string {
   if (v.length === 0) return ''
-  const order = ['obstacle_intrusion', 'overlap', 'unreachable', 'fence_clearance', 'outside_envelope'] as const
+  const order = [
+    'obstacle_intrusion',
+    'overlap',
+    'unreachable',
+    'operator_zone_intrusion',
+    'fence_clearance',
+    'outside_envelope',
+  ] as const
   for (const k of order) {
     if (v.some((x) => x.kind === k)) {
       if (k === 'obstacle_intrusion') return 'OBSTACLE'
       if (k === 'overlap') return 'OVERLAP'
       if (k === 'unreachable') return 'REACH'
+      if (k === 'operator_zone_intrusion') return 'OPERATOR'
       if (k === 'fence_clearance') return 'FENCE'
       return 'ENVELOPE'
     }

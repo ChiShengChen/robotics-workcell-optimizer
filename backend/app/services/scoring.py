@@ -525,6 +525,127 @@ def _check_obstacle_intrusion(
     return violations
 
 
+OPERATOR_FENCE_CLEARANCE_MM = 600.0
+
+
+def _check_operator_zone(
+    proposal: LayoutProposal, spec: WorkcellSpec
+) -> list[Violation]:
+    """Operator zone constraints (ISO 10218 spirit):
+
+    A. bbox must not overlap any robot / conveyor / pallet body.
+    B. must not lie inside any robot's effective_reach disk
+       (operator stands inside the robot's working envelope).
+       Exempt if the cell has a light curtain (operator entry is gated
+       by the safe-state interlock).
+    C. must keep ≥ 600 mm clearance from the safety fence so the
+       operator can actually stand and work without bumping the guard.
+       Also exempt with a light curtain.
+
+    All three are SOFT violations — the demo seeds intentionally place
+    the operator zone near the robot row to visualise the access lane,
+    and real palletizing cells almost always gate that lane with a
+    light curtain + safe-state interlock so the layout is shippable.
+    Marking these HARD would zero the aggregate of every greedy seed.
+    Yields one Violation per failed constraint per operator zone.
+    """
+    operators = [c for c in proposal.components if c.type == "operator_zone"]
+    if not operators:
+        return []
+    has_curtain = any(
+        c.type == "fence" and bool(c.dims.get("has_light_curtain", False))
+        for c in proposal.components
+    ) or any(
+        getattr(comp, "has_light_curtain", False)
+        for comp in spec.components
+        if comp.type == "fence"
+    )
+    robots = [c for c in proposal.components if c.type == "robot"]
+    bodies = [
+        c for c in proposal.components
+        if c.type in ("robot", "conveyor", "pallet")
+    ]
+    fence = next((c for c in proposal.components if c.type == "fence"), None)
+
+    violations: list[Violation] = []
+    for op in operators:
+        op_rect = _bbox_for(op)
+
+        # A. Physical overlap with any body.
+        for b in bodies:
+            if _aabb_overlap(op_rect, _bbox_for(b)):
+                violations.append(
+                    Violation(
+                        kind="operator_zone_intrusion", severity="soft",
+                        component_ids=[op.id, b.id],
+                        message=f"{op.id} bbox overlaps {b.id}.",
+                    )
+                )
+
+        # B. Operator standing inside a robot's effective reach.
+        if not has_curtain:
+            op_corners = [
+                (op_rect.x, op_rect.y),
+                (op_rect.x + op_rect.w, op_rect.y),
+                (op_rect.x, op_rect.y + op_rect.h),
+                (op_rect.x + op_rect.w, op_rect.y + op_rect.h),
+                (op_rect.x + op_rect.w / 2, op_rect.y + op_rect.h / 2),
+            ]
+            for r in robots:
+                eff = float(r.dims.get("effective_reach_mm")
+                            or r.dims.get("reach_mm") or 0.0)
+                if eff <= 0:
+                    continue
+                rx, ry = r.x_mm, r.y_mm
+                # Closest corner inside the disk -> intrusion.
+                closest_in = min(
+                    (math.hypot(cx - rx, cy - ry) for cx, cy in op_corners),
+                    default=math.inf,
+                )
+                if closest_in < eff:
+                    penetration = eff - closest_in
+                    violations.append(
+                        Violation(
+                            kind="operator_zone_intrusion", severity="soft",
+                            component_ids=[op.id, r.id],
+                            message=(
+                                f"{op.id} sits inside {r.id}'s effective reach "
+                                f"({eff:.0f} mm); penetration ≈ {penetration:.0f} mm. "
+                                f"Add a light curtain or move the operator out."
+                            ),
+                            margin_mm=-penetration,
+                        )
+                    )
+                    break
+
+        # C. Operator must keep clearance from the fence (work-room).
+        if fence and not has_curtain:
+            poly = fence.dims.get("polyline", []) or []
+            if len(poly) >= 2:
+                op_corners_c = [
+                    (op_rect.x, op_rect.y),
+                    (op_rect.x + op_rect.w, op_rect.y),
+                    (op_rect.x + op_rect.w, op_rect.y + op_rect.h),
+                    (op_rect.x, op_rect.y + op_rect.h),
+                ]
+                d = min(_distance_point_to_polyline(p, poly) for p in op_corners_c)
+                slack = d - OPERATOR_FENCE_CLEARANCE_MM
+                if slack < 0:
+                    violations.append(
+                        Violation(
+                            kind="operator_zone_intrusion", severity="soft",
+                            component_ids=[op.id, fence.id],
+                            message=(
+                                f"{op.id} is only {d:.0f} mm from the fence; "
+                                f"recommend ≥ {OPERATOR_FENCE_CLEARANCE_MM:.0f} mm "
+                                f"work-room clearance."
+                            ),
+                            margin_mm=slack,
+                        )
+                    )
+    return violations
+
+
 def _check_envelope(
     proposal: LayoutProposal, spec: WorkcellSpec
 ) -> list[Violation]:
@@ -576,6 +697,7 @@ def score_layout(
     violations.extend(_check_overlaps(proposal))
     violations.extend(_check_envelope(proposal, spec))
     violations.extend(_check_obstacle_intrusion(proposal, spec))
+    violations.extend(_check_operator_zone(proposal, spec))
 
     has_hard = any(v.severity == "hard" for v in violations)
     sub_scores = {
