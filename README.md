@@ -627,6 +627,166 @@ Every `updateComponentPose` call applies `poseSnapAndClamp`
 (snap-to-50mm + clamp to envelope) before storing, so the canvas
 never holds an out-of-bounds or off-grid pose.
 
+## 16. CAD floor-plan import (DXF)
+
+**Files**: [`backend/app/services/cad_import.py`](backend/app/services/cad_import.py),
+[`backend/app/api/cad.py`](backend/app/api/cad.py),
+[`backend/app/schemas/obstacle.py`](backend/app/schemas/obstacle.py)
+
+**What it does**: upload an ASCII `.dxf` floor plan; the system extracts
+walls + columns + existing equipment as **obstacles** the layout must
+avoid, and auto-detects the cell envelope from the outer wall.
+
+**How it works**:
+
+### 16a. DXF parser
+- Reads LINE / LWPOLYLINE / POLYLINE / CIRCLE (32-gon discretisation) /
+  ARC (~6 segs/radian) entities into mm polygons via `ezdxf`.
+- `treat_largest_as_boundary=True` (default): the largest closed polygon
+  is interpreted as the cell **outer wall** — its bbox sets the envelope,
+  it is NOT added as an obstacle. Common floor-plan convention. Disable
+  via query param if every closed polygon should be a forbidden region.
+- `margin_mm` shifts the bbox origin so the smallest (x, y) lands at
+  (margin, margin). Default 200 mm so the layout has breathing room.
+
+### 16b. Schema integration
+- `Obstacle` model: `{id, polygon, closed, source_layer, source_entity}`.
+- `WorkcellSpec.obstacles: list[Obstacle]` — empty by default.
+- `Violation.kind` gains `obstacle_intrusion` (HARD).
+
+### 16c. Detection (exact polygon-vs-rect)
+- `aabb_intersects_polygon`: ray-cast each rect corner + ray-cast each
+  polygon vertex against the rect + edge-edge crossing. Catches all
+  overlap cases for arbitrary simple polygons.
+- Backend scoring + client `validation.ts` use the same algorithm so red
+  highlights appear synchronously when a body is dragged over an obstacle.
+
+### 16d. Penetration depth as gradient
+When a body intrudes, scoring reports `margin_mm = -min(overlap_x,
+overlap_y)` (the smaller AABB overlap dimension). SA's
+`_sa_internal_score` uses `abs(margin_mm)` as the soft penalty, so the
+deeper the intrusion the stronger the gradient out — SA can climb out
+of any obstacle without random-walking.
+
+### 16e. CP-SAT obstacle constraint
+Each obstacle's AABB is added to `add_no_overlap_2d` as a fixed-position
+rectangle alongside the robot footprint and movable bodies. Conservative
+(a 32-gon column becomes a slightly-larger square, ~1.5% inflated) but
+exact for the rectangular equipment that dominates real floor plans.
+INFEASIBLE if obstacles + reach + envelope can't all be satisfied — SA
+fallback is the next move.
+
+### 16f. UI
+"Import floor plan (.dxf)…" button in the InputPanel; obstacles render
+as gray polygons in the 2D Konva canvas (closed = filled, open = wall)
+and as semi-transparent **1.5 m extruded walls** in the 3D preview.
+
+## 17. Multi-arm support (dual-arm dual-pallet)
+
+**Files**: [`backend/app/services/layout.py`](backend/app/services/layout.py),
+[`backend/app/services/scoring.py`](backend/app/services/scoring.py),
+[`frontend/src/components/canvas/Workcell3DCanvas.tsx`](frontend/src/components/canvas/Workcell3DCanvas.tsx)
+
+**What it does**: when target throughput exceeds what one robot can sustain
+(`cph_target >= 1500`), the greedy generator biases a `dual_arm_dual_pallet`
+template — two robots in parallel, each with its own infeed conveyor and
+outboard pallet. System UPH ≈ 2× single-arm. Most common high-throughput
+palletizing configuration in real food / beverage lines.
+
+### 17a. Schema
+- `LayoutProposal.robot_model_ids: list[str]` — one entry per robot
+  PlacedComponent (in order). Single-arm has `len==1`.
+- `LayoutProposal.task_assignment: dict[str, list[str]]` — maps
+  `robot.id -> [pallet_id, conveyor_id, …]` it owns. Empty dict =
+  single-arm convention (every robot serves every pallet + conveyor).
+- New template literal `dual_arm_dual_pallet`.
+
+### 17b. Greedy `dual_arm_dual_pallet` template
+- Robots placed at ~30% and ~70% of cell width, ensuring their reach
+  envelopes don't overlap.
+- Two short infeed conveyors (`conveyor_1` / `conveyor_2`) feeding from
+  the south, one per robot.
+- Pallets outboard (`pallet_1` west of `robot_1`, `pallet_2` east of
+  `robot_2`) so they don't compete for floor space.
+- Single fence wraps both reach envelopes; one operator zone on the
+  open north side, between the robots.
+- `task_assignment = {robot_1: [pallet_1, conveyor_1], robot_2:
+  [pallet_2, conveyor_2]}` — no shared workspace, so **no motion
+  coordination required** (the deliberately-easy case).
+
+### 17c. Per-robot scoring
+- `score_reach_margin` and `score_cycle_efficiency` accept
+  `list[RobotSpec] | RobotSpec | None`. The i-th robot PlacedComponent
+  uses the i-th RobotSpec.
+- Reach: `_targets_for_robot(robot.id)` walks `task_assignment` for
+  pallets AND conveyors; aggregate uses the **worst** min margin
+  (any single robot failing fails the layout).
+- Cycle: per-robot trapezoidal estimate; `estimated_cycle_time_s`
+  reports the bottleneck cycle, `estimated_uph` reports the SYSTEM
+  UPH (sum of per-robot UPH).
+- Backwards compatible: passing a single `RobotSpec` still works
+  (auto-wrapped to a one-element list).
+
+### 17d. 3D animation: independent cycles, phase-offset
+- `AnimatedScene` builds one `RobotInstance` per robot
+  PlacedComponent, each with its own `CycleConfig` + `CycleState` +
+  EOAT pose ref + IK arm pose.
+- Each robot's cycle starts at `idx/N * cycleSeconds` so when N=2,
+  one robot picks while the other places — visually compelling
+  parallel motion, not lockstep.
+- Per-conveyor case streams: each conveyor maintains its own pool of
+  4 belt cases drifting toward the robot. The front belt case hides
+  while ITS owner robot is carrying.
+- Pallets aggregate `placedPerPallet` across all robots; both pallets
+  fill simultaneously.
+
+### 17e. RobotInfoPanel multi-robot view
+Lists every robot in the proposal with model id, reach, effective
+reach (×0.85 derate), footprint, and assigned tasks. Header shows
+"Robots (N)".
+
+### 17f. Known limitations
+
+These three are deliberate scope cuts for the take-home:
+
+- **CP-SAT only treats the first robot as a fixed obstacle** —
+  `CPSATRefiner.refine` adds the primary robot's footprint to
+  `add_no_overlap_2d` and applies the 16-half-plane reach constraint
+  around that one robot. Per-robot reach polygons + secondary robot
+  footprints aren't modelled yet, so CP-SAT may produce solutions
+  feasible for robot_1 but not robot_2. SA does honour every robot's
+  task_assignment via per-robot reach scoring, so the SA tab is the
+  safer optimiser for multi-arm layouts. Follow-up: extend
+  `CPSATRefiner` to add one set of 16-half-plane constraints + a fixed
+  obstacle interval per robot.
+
+- **Both arms share the same robot model** — the greedy generator
+  picks one robot from the catalog and reuses it for every arm
+  (homogeneous configuration). Real cells often run **heterogeneous**
+  arm pairs: a fast 4-axis palletizer for column stacking + a 6-axis
+  arm for layer-building or for the random-orientation infeed. Adding
+  this means: per-arm role enum (`picker` / `layer_builder` / etc.),
+  per-arm robot selection in `_pick_robot`, and per-arm cycle math.
+  Schema is already permissive (`robot_model_ids` is a list of strings,
+  not constrained to one value), so this is a generator change, not a
+  schema break.
+
+- **No motion coordination between arms** — we deliberately chose the
+  no-shared-workspace topology (each robot has its own dedicated
+  conveyor + pallet, no overlap of reach envelopes) so this never
+  arises. Real shared-workspace dual-arm cells need:
+  - **Coordination zones** (regions where only one arm at a time can
+    operate, enforced by the cell controller).
+  - **Time-window scheduling** so the arms take turns in shared zones.
+  - **Inter-arm collision checking** in the planner (or hardware-level
+    safety scanners + emergency stop interlocks).
+  This is an entire product layer (think ROS Industrial dual-arm
+  coordination, or the cell programmer's responsibility on FANUC
+  DCS / ABB SafeMove) that's out of scope for layout planning.
+  The current configuration is genuinely the most common
+  high-throughput dual-arm layout in production palletizing today
+  precisely because it sidesteps motion coordination entirely.
+
 ---
 
 # Setup
@@ -731,19 +891,28 @@ cd frontend && pnpm build                          # production bundle
 
 ## What I'd improve with more time
 
-- Full ISO 13855:2024 dynamic separation formula `S = K·T + DDS + Z`
+- **Per-robot CP-SAT constraints** — currently only the primary robot
+  gets the 16-half-plane reach polygon + footprint obstacle in
+  `add_no_overlap_2d`; multi-arm CP-SAT is the SA tab's job (see §17f).
+- **Heterogeneous arm pairs** — let the greedy generator pick a
+  fast 4-axis picker + a 6-axis layer-builder instead of two of the
+  same model (see §17f).
+- **Shared-workspace dual-arm coordination** — coordination zones +
+  time-window scheduling + inter-arm collision checking, for the
+  layouts where arms share floor area (see §17f).
+- Full ISO 13855:2024 dynamic separation formula `S = K·T + DDS + Z`.
 - Real 6-axis IK reach checks (currently approximated by truncated
-  spherical envelope)
-- CMA-ES vs SA comparison
-- Learned scoring weights from human feedback (Bradley-Terry)
-- WebSocket for collaborative multi-engineer editing
+  spherical envelope).
+- CMA-ES vs SA comparison.
+- Learned scoring weights from human feedback (Bradley-Terry).
+- WebSocket for collaborative multi-engineer editing.
 - Robot path planning visualization (CHOMP / RRT-Connect) with
-  joint-limit + self-collision checks
+  joint-limit + self-collision checks.
 - Real palletizer GLBs are now hot-swappable via
   `frontend/public/models/<slug>.glb` (see §13h); curate a few CC-BY
-  mesh files into the demo bundle
+  mesh files into the demo bundle.
 - Code-split the 3D bundle so the 2D-only path doesn't pay the
-  three.js cost upfront
+  three.js cost upfront.
 
 ## Acknowledgments
 
