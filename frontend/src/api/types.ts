@@ -150,6 +150,28 @@ export interface PlacedComponent {
   dims: Record<string, unknown>
 }
 
+export interface CostBreakdownLineItem {
+  label: string
+  qty: number
+  unit_usd: number
+  subtotal_usd: number
+}
+
+export interface CostBreakdown {
+  robots_usd: number
+  eoat_usd: number
+  conveyors_usd: number
+  fence_usd: number
+  cell_controller_usd: number
+  bare_total_usd: number
+  integration_multiplier: number
+  integration_usd: number
+  grand_total_usd: number
+  annual_labor_savings_usd: number
+  payback_months: number
+  line_items: CostBreakdownLineItem[]
+}
+
 export interface LayoutProposal {
   proposal_id: string
   template: LayoutTemplate
@@ -163,6 +185,7 @@ export interface LayoutProposal {
   rationale: string
   assumptions: string[]
   estimated_cost_usd: number
+  cost_breakdown: CostBreakdown | null
 }
 
 // ---- Scoring (Phase 4 will populate) --------------------------------------

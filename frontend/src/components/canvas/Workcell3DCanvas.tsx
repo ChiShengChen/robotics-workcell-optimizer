@@ -7,7 +7,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { Grid, OrbitControls, RoundedBox, Text } from '@react-three/drei'
 import * as THREE from 'three'
-import { Pause, Play, RotateCcw } from 'lucide-react'
+import { Circle, Pause, Play, RotateCcw, Square } from 'lucide-react'
 
 import type { LayoutProposal, Obstacle, PlacedComponent, WorkcellSpec } from '@/api/types'
 import { buildStack, type CaseDims, type PalletDims } from '@/lib/stacking'
@@ -33,6 +33,96 @@ const FENCE_HEIGHT = 2.0
 const FENCE_THICKNESS = 0.04
 const OPERATOR_PAD_HEIGHT = 0.02
 const PALLET_TOP_Y = 0.022 + 0.078 + 0.022 // matches plank-built pallet structure
+const RECORDING_MAX_S = 30
+
+interface RecorderHandle {
+  recording: boolean
+  elapsedS: number
+  toggle: () => void
+  unsupported: boolean
+}
+
+/** Capture the WebGL canvas as a webm clip (MediaRecorder + canvas.captureStream).
+ *  Auto-stops at RECORDING_MAX_S; downloads with a sensible filename. */
+function useRecorder(
+  containerRef: React.RefObject<HTMLDivElement | null>,
+  templateLabel: string,
+): RecorderHandle {
+  const [recording, setRecording] = useState(false)
+  const [elapsedS, setElapsedS] = useState(0)
+  const recRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const startTRef = useRef<number>(0)
+  const tickerRef = useRef<number | null>(null)
+  const unsupported =
+    typeof window === 'undefined' ||
+    typeof window.MediaRecorder === 'undefined' ||
+    typeof HTMLCanvasElement.prototype.captureStream !== 'function'
+
+  const stop = () => {
+    if (recRef.current && recRef.current.state !== 'inactive') {
+      recRef.current.stop()
+    }
+    if (tickerRef.current !== null) {
+      window.clearInterval(tickerRef.current)
+      tickerRef.current = null
+    }
+  }
+
+  const start = () => {
+    if (unsupported) return
+    const canvas = containerRef.current?.querySelector('canvas') as
+      | HTMLCanvasElement
+      | undefined
+    if (!canvas) return
+    const stream = canvas.captureStream(30)
+    const mimeCandidates = [
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm',
+    ]
+    const mimeType = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m))
+    const rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+    chunksRef.current = []
+    rec.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data)
+    }
+    rec.onstop = () => {
+      const blob = new Blob(chunksRef.current, { type: mimeType ?? 'video/webm' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      const ts = new Date().toISOString().replace(/[:.]/g, '-')
+      a.href = url
+      a.download = `workcell-${templateLabel}-${ts}.webm`
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(url), 5000)
+      setRecording(false)
+      setElapsedS(0)
+    }
+    rec.start(250) // collect data every 250ms so onstop has chunks even if short
+    recRef.current = rec
+    startTRef.current = performance.now()
+    setRecording(true)
+    setElapsedS(0)
+    tickerRef.current = window.setInterval(() => {
+      const e = (performance.now() - startTRef.current) / 1000
+      setElapsedS(e)
+      if (e >= RECORDING_MAX_S) stop()
+    }, 100)
+  }
+
+  useEffect(() => {
+    return () => stop()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  return {
+    recording,
+    elapsedS,
+    toggle: () => (recording ? stop() : start()),
+    unsupported,
+  }
+}
 
 export function Workcell3DCanvas({ proposal, spec }: Props) {
   const cellW = (proposal?.cell_bounds_mm[0] ?? spec?.cell_envelope_mm[0] ?? 8000) * MM_TO_M
@@ -41,9 +131,11 @@ export function Workcell3DCanvas({ proposal, spec }: Props) {
   const [playing, setPlaying] = useState(true)
   const [speed, setSpeed] = useState(0.6)
   const [resetTick, setResetTick] = useState(0)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const recorder = useRecorder(containerRef, proposal?.template ?? 'workcell')
 
   return (
-    <div className="relative h-full w-full bg-gradient-to-b from-slate-100 to-slate-200">
+    <div ref={containerRef} className="relative h-full w-full bg-gradient-to-b from-slate-100 to-slate-200">
       <Canvas
         shadows
         camera={{ position: [cellW * 1.1, cellH * 1.1, cellW * 1.1], fov: 40 }}
@@ -139,6 +231,36 @@ export function Workcell3DCanvas({ proposal, spec }: Props) {
           />
           <span className="w-8 tabular-nums text-slate-700">{speed.toFixed(1)}x</span>
         </label>
+        <span className="text-slate-400">|</span>
+        <button
+          type="button"
+          onClick={recorder.toggle}
+          disabled={recorder.unsupported}
+          className={`flex h-5 items-center gap-1 rounded px-1.5 text-[10px] font-medium ${
+            recorder.recording
+              ? 'bg-red-50 text-red-700 hover:bg-red-100'
+              : 'text-slate-600 hover:bg-slate-100 disabled:opacity-50'
+          }`}
+          title={
+            recorder.unsupported
+              ? 'MediaRecorder not supported in this browser'
+              : recorder.recording
+                ? 'Stop + download .webm'
+                : 'Record 30s clip'
+          }
+        >
+          {recorder.recording ? (
+            <>
+              <Square className="h-3 w-3 fill-current" />
+              <span className="tabular-nums">{recorder.elapsedS.toFixed(0)}s</span>
+            </>
+          ) : (
+            <>
+              <Circle className="h-3 w-3 fill-red-500 text-red-500" />
+              <span>Rec</span>
+            </>
+          )}
+        </button>
       </div>
 
       <div className="pointer-events-none absolute bottom-2 right-3 rounded bg-white/80 px-2 py-1 text-[11px] text-slate-600 shadow-sm">

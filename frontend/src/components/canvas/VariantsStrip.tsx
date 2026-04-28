@@ -7,6 +7,8 @@ import { cn } from '@/lib/utils'
 import type { LayoutProposal, PlacedComponent } from '@/api/types'
 import { useLayoutStore } from '@/store/layoutStore'
 import { CompareSheet } from './CompareSheet'
+import { SideBySideCompare } from './SideBySideCompare'
+import { BomDialog } from '@/components/panels/BomDialog'
 
 const THUMB_W = 200
 const THUMB_H = 130
@@ -26,7 +28,11 @@ export function VariantsStrip() {
         <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
           Variants ({proposals.length})
         </span>
-        <CompareSheet />
+        <div className="flex items-center gap-2">
+          <BomDialog />
+          <SideBySideCompare />
+          <CompareSheet />
+        </div>
       </div>
       <div className="flex gap-3 overflow-x-auto pb-1">
         {proposals.map((p) => {

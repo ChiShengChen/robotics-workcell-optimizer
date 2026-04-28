@@ -941,7 +941,63 @@ AND strictly beats it on at least one. So a layout with smaller
 footprint AND higher UPH AND lower cost is the only "uniformly better"
 case; otherwise the trade-off lives on the frontier.
 
-## 23. 3D pallet stack wrap
+## 23. BOM + ROI dialog
+
+**Files**: [`backend/app/schemas/layout.py`](backend/app/schemas/layout.py)
+(`CostBreakdown`),
+[`backend/app/services/layout.py`](backend/app/services/layout.py)
+(`_compute_cost_breakdown`),
+[`frontend/src/components/panels/BomDialog.tsx`](frontend/src/components/panels/BomDialog.tsx)
+
+Itemised hardware BOM + integration markup + payback estimate per
+proposal. Triggered from the variants strip toolbar (`BOM` button).
+
+| Line item              | Unit cost (rough)                           |
+|------------------------|---------------------------------------------|
+| Robots                 | midpoint catalogue price (`(low+high)/2`)   |
+| EOAT (gripper)         | $8k per arm                                 |
+| Conveyors              | $4k/m belt + $3k controls per section       |
+| Safety fence           | $120/m perimeter + $4k light curtain        |
+| Cell controller / PLC  | $20k flat                                   |
+| Integration markup     | ×1.6 (60%) on bare hardware total           |
+
+ROI: assumes one displaced manual palletizer per arm at $50k/year fully
+loaded labour cost (US median, conservative). Payback months =
+`grand_total / (annual_savings / 12)`. The dialog also shows a rough
+3-year NPV (no discount, no opex). Numbers are explicitly labelled as
+order-of-magnitude — a real procurement quote needs vendor RFQs +
+integrator site visit.
+
+## 24. Side-by-side compare
+
+**File**: [`frontend/src/components/canvas/SideBySideCompare.tsx`](frontend/src/components/canvas/SideBySideCompare.tsx)
+
+Two proposals rendered as 380×280 px Konva canvases side-by-side, with
+a delta table below. The table highlights the better-on-each-axis cell
+in **bold green** (lower cycle / higher UPH / lower cost / higher
+sub-scores). Pulls cost data from §23 to compare total cell cost +
+payback months alongside the throughput / safety scores.
+
+Triggered from the variants strip toolbar (`A vs B`). Greys out when
+fewer than 2 proposals exist.
+
+## 25. 3D canvas recording
+
+**File**: [`frontend/src/components/canvas/Workcell3DCanvas.tsx`](frontend/src/components/canvas/Workcell3DCanvas.tsx)
+(`useRecorder`)
+
+Click `Rec` in the 3D toolbar to capture a 30-second .webm clip of the
+running animation. Uses `HTMLCanvasElement.captureStream(30)` →
+`MediaRecorder` (vp9 → vp8 → default). Auto-stops at 30s; downloads
+the clip as `workcell-{template}-{timestamp}.webm`. The button shows
+the elapsed second counter while recording. Greys out gracefully when
+the browser doesn't support MediaRecorder + canvas captureStream
+(Safari < 14 mostly).
+
+Useful for sending clients a short demo loop without screen-recording
+the whole browser.
+
+## 26. 3D pallet stack wrap
 
 **File**: [`frontend/src/lib/cycleAnimation.ts`](frontend/src/lib/cycleAnimation.ts)
 

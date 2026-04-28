@@ -33,6 +33,44 @@ class PlacedComponent(BaseModel):
     )
 
 
+class CostBreakdown(BaseModel):
+    """Itemised BOM + ROI estimate for a layout. Numbers are order-of-
+    magnitude estimates intended for proposal-vs-proposal comparison, not
+    for procurement quotes — a real quote needs vendor RFQs + integrator
+    site visit + safety audit. The integration multiplier (1.6× bare-arm)
+    reflects typical industry markup for installation, EOAT, vision,
+    safety scanners, and commissioning.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    robots_usd: float = Field(description="Bare-arm catalogue midpoint, summed across arms.", ge=0)
+    eoat_usd: float = Field(description="End-of-arm tooling: ~$8k/arm typical.", ge=0)
+    conveyors_usd: float = Field(description="Conveyor sections: ~$4k/m + $3k controls each.", ge=0)
+    fence_usd: float = Field(description="Safety fence: $120/m perimeter + $4k light curtain.", ge=0)
+    cell_controller_usd: float = Field(description="PLC + cell controller + HMI: ~$20k flat.", ge=0)
+    bare_total_usd: float = Field(description="Sum of all hardware line items above.", ge=0)
+    integration_multiplier: float = Field(
+        description="1.6× = installation, integration, commissioning, training markup.", ge=1.0,
+    )
+    integration_usd: float = Field(description="bare_total × (multiplier − 1).", ge=0)
+    grand_total_usd: float = Field(description="bare_total + integration.", ge=0)
+    annual_labor_savings_usd: float = Field(
+        description=(
+            "Estimated yearly savings vs manual palletizing: assumes "
+            "$50k/year per displaced manual palletizer × n_robots."
+        ),
+        ge=0,
+    )
+    payback_months: float = Field(
+        description="grand_total / (annual_savings / 12). 0 if no savings.", ge=0,
+    )
+    line_items: list[dict[str, str | float]] = Field(
+        default_factory=list,
+        description="Per-line table: [{label, qty, unit_usd, subtotal_usd}, ...] for the UI.",
+    )
+
+
 class LayoutProposal(BaseModel):
     """One candidate layout. Aggregates components + cycle/UPH estimates."""
 
@@ -89,6 +127,10 @@ class LayoutProposal(BaseModel):
             "axis (bubble size) in the Pareto explorer."
         ),
         ge=0,
+    )
+    cost_breakdown: CostBreakdown | None = Field(
+        default=None,
+        description="Itemised BOM + ROI for the proposal-cost dialog.",
     )
 
 

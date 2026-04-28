@@ -13,7 +13,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Literal
 
-from app.schemas.layout import LayoutProposal, PlacedComponent
+from app.schemas.layout import CostBreakdown, LayoutProposal, PlacedComponent
 from app.schemas.robot import IdealUseCase, RobotSpec
 from app.schemas.workcell import Pallet, Robot, WorkcellSpec
 from app.services.catalog import RobotCatalogService
@@ -343,6 +343,93 @@ class GreedyLayoutGenerator:
             return [alt, alt, primary, primary]
         return [primary] * n_arms
 
+    def _compute_cost_breakdown(
+        self,
+        arm_robots: list[RobotSpec | None],
+        placed: list[PlacedComponent],
+    ) -> CostBreakdown:
+        """Itemised BOM + ROI estimate. Unit costs are typical mid-2020s
+        industry numbers — meant for ballpark proposal-vs-proposal compare,
+        not procurement quotes."""
+        # Robots: midpoint catalogue price.
+        robots_usd = sum(
+            (ar.price_usd_low + ar.price_usd_high) / 2.0
+            for ar in arm_robots if ar is not None
+        )
+        n_arms = sum(1 for ar in arm_robots if ar is not None)
+        # EOAT (gripper): ~$8k per arm — vacuum or magnetic, palletizing-grade.
+        eoat_per_arm_usd = 8000.0
+        eoat_usd = eoat_per_arm_usd * n_arms
+
+        # Conveyors: $4k/m of belt + $3k controls per section.
+        conveyors = [c for c in placed if c.type == "conveyor"]
+        conv_unit = 3000.0
+        conv_per_m = 4000.0
+        conveyors_usd = sum(
+            conv_unit + conv_per_m * (float(c.dims.get("length_mm", 2500)) / 1000.0)
+            for c in conveyors
+        )
+
+        # Fence: $120/m perimeter + $4k light curtain.
+        fence_usd = 0.0
+        for c in placed:
+            if c.type != "fence":
+                continue
+            poly = c.dims.get("polyline") or []
+            perim_m = 0.0
+            for i in range(len(poly) - 1):
+                ax, ay = poly[i]
+                bx, by = poly[i + 1]
+                perim_m += math.hypot(bx - ax, by - ay) / 1000.0
+            fence_usd += perim_m * 120.0
+            if c.dims.get("has_light_curtain", False):
+                fence_usd += 4000.0
+
+        # Cell controller / PLC / HMI: ~$20k flat per cell.
+        cell_controller_usd = 20000.0
+
+        bare_total = robots_usd + eoat_usd + conveyors_usd + fence_usd + cell_controller_usd
+        integration_mult = 1.6  # 60% markup is industry typical
+        integration_usd = bare_total * (integration_mult - 1.0)
+        grand_total = bare_total + integration_usd
+
+        # ROI: assume 1 displaced manual palletizer per arm × $50k/yr fully
+        # loaded labour cost (US median: ~$18-22/hr × 50 hr/wk × 50 wk +
+        # benefits ≈ $50k). Conservative — high-throughput cells often
+        # displace 2 shifts.
+        annual_savings = 50000.0 * n_arms
+        payback_months = (
+            grand_total / (annual_savings / 12.0) if annual_savings > 0 else 0.0
+        )
+
+        line_items: list[dict[str, str | float]] = [
+            {"label": f"Robots ({n_arms} arms)", "qty": n_arms,
+             "unit_usd": robots_usd / max(1, n_arms), "subtotal_usd": robots_usd},
+            {"label": "EOAT (grippers)", "qty": n_arms,
+             "unit_usd": eoat_per_arm_usd, "subtotal_usd": eoat_usd},
+            {"label": f"Conveyors ({len(conveyors)} sections)", "qty": len(conveyors),
+             "unit_usd": conveyors_usd / max(1, len(conveyors)), "subtotal_usd": conveyors_usd},
+            {"label": "Safety fence + light curtain", "qty": 1,
+             "unit_usd": fence_usd, "subtotal_usd": fence_usd},
+            {"label": "Cell controller + PLC + HMI", "qty": 1,
+             "unit_usd": cell_controller_usd, "subtotal_usd": cell_controller_usd},
+        ]
+
+        return CostBreakdown(
+            robots_usd=robots_usd,
+            eoat_usd=eoat_usd,
+            conveyors_usd=conveyors_usd,
+            fence_usd=fence_usd,
+            cell_controller_usd=cell_controller_usd,
+            bare_total_usd=bare_total,
+            integration_multiplier=integration_mult,
+            integration_usd=integration_usd,
+            grand_total_usd=grand_total,
+            annual_labor_savings_usd=annual_savings,
+            payback_months=payback_months,
+            line_items=line_items,
+        )
+
     def _build_template(
         self,
         spec: WorkcellSpec,
@@ -433,6 +520,7 @@ class GreedyLayoutGenerator:
             (ar.price_usd_low + ar.price_usd_high) / 2.0
             for ar in arm_robots if ar is not None
         )
+        cost_breakdown = self._compute_cost_breakdown(arm_robots, placed)
         return LayoutProposal(
             proposal_id=str(uuid.uuid4())[:8],
             template=template,
@@ -446,6 +534,7 @@ class GreedyLayoutGenerator:
             rationale=rationale,
             assumptions=assumptions,
             estimated_cost_usd=cost_usd,
+            cost_breakdown=cost_breakdown,
         )
 
     # -- shared placement helpers ------------------------------------------
