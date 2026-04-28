@@ -17,7 +17,7 @@ class GenerateLayoutRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     spec: WorkcellSpec = Field(description="Extracted workcell specification.")
-    n_variants: int = Field(default=3, description="Number of template variants to return.", ge=1, le=4)
+    n_variants: int = Field(default=3, description="Number of template variants to return.", ge=1, le=6)
 
 
 @router.post("", response_model=list[LayoutProposal])
