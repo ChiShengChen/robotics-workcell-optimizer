@@ -587,13 +587,31 @@ export const useLayoutStore = create<LayoutState>()(
         activeProposalId: state.activeProposalId,
         nVariants: state.nVariants,
       }),
+      // After rehydrating from localStorage, snap activeProposalId back to
+      // proposals[0] if the persisted id no longer matches any proposal (e.g.
+      // template bias changed across deploys, leaving the user staring at a
+      // stale single-arm pick on a "should be triple-arm" prompt).
+      onRehydrateStorage: () => (state) => {
+        if (!state) return
+        const ids = new Set(state.proposals.map((p) => p.proposal_id))
+        if (!state.activeProposalId || !ids.has(state.activeProposalId)) {
+          state.activeProposalId = state.proposals[0]?.proposal_id ?? null
+        }
+      },
     },
   ),
 )
 
 export function getActiveProposal(state: LayoutState): LayoutProposal | null {
-  if (!state.activeProposalId) return null
-  return state.proposals.find((p) => p.proposal_id === state.activeProposalId) ?? null
+  // Fall back to proposals[0] when the persisted activeProposalId no longer
+  // matches any current proposal — keeps the canvas in sync with the highest-
+  // ranked variant after the bias logic / template list shifts.
+  if (!state.activeProposalId) return state.proposals[0] ?? null
+  return (
+    state.proposals.find((p) => p.proposal_id === state.activeProposalId) ??
+    state.proposals[0] ??
+    null
+  )
 }
 
 export function getActiveScore(state: LayoutState): ScoreBreakdown | null {
