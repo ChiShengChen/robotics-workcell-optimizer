@@ -1,6 +1,6 @@
 // Strip of thumbnail mini-canvases — clicking switches active proposal.
 
-import { Layer, Line, Rect, Stage } from 'react-konva'
+import { Group, Layer, Line, Rect, Stage } from 'react-konva'
 
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
@@ -103,15 +103,7 @@ function renderThumbComponent(c: PlacedComponent, mmPerPx: number) {
     const r = (c.dims.base_radius_mm as number | undefined) ?? 350
     const reach = (c.dims.reach_mm as number | undefined) ?? 2400
     return (
-      <Layer key={key} listening={false}>
-        <Rect
-          x={toPx(c.x_mm) - toPx(r)}
-          y={toPx(c.y_mm) - toPx(r)}
-          width={toPx(2 * r)}
-          height={toPx(2 * r)}
-          fill="#1f2937"
-          cornerRadius={toPx(r)}
-        />
+      <Group key={key} listening={false}>
         <Rect
           x={toPx(c.x_mm) - toPx(reach)}
           y={toPx(c.y_mm) - toPx(reach)}
@@ -122,7 +114,15 @@ function renderThumbComponent(c: PlacedComponent, mmPerPx: number) {
           dash={[3, 3]}
           cornerRadius={toPx(reach)}
         />
-      </Layer>
+        <Rect
+          x={toPx(c.x_mm) - toPx(r)}
+          y={toPx(c.y_mm) - toPx(r)}
+          width={toPx(2 * r)}
+          height={toPx(2 * r)}
+          fill="#1f2937"
+          cornerRadius={toPx(r)}
+        />
+      </Group>
     )
   }
   if (c.type === 'conveyor') {

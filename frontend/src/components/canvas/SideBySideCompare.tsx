@@ -3,7 +3,7 @@
 
 import { Columns2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { Layer, Line, Rect, Stage } from 'react-konva'
+import { Group, Layer, Line, Rect, Stage } from 'react-konva'
 
 import type { LayoutProposal, PlacedComponent, ScoreBreakdown } from '@/api/types'
 import { Badge } from '@/components/ui/badge'
@@ -82,7 +82,7 @@ function renderCmp(c: PlacedComponent, mmPerPx: number) {
     const r = (c.dims.base_radius_mm as number | undefined) ?? 350
     const reach = (c.dims.reach_mm as number | undefined) ?? 2400
     return (
-      <Layer key={c.id} listening={false}>
+      <Group key={c.id} listening={false}>
         <Rect
           x={toPx(c.x_mm) - toPx(reach)}
           y={toPx(c.y_mm) - toPx(reach)}
@@ -101,7 +101,7 @@ function renderCmp(c: PlacedComponent, mmPerPx: number) {
           fill="#1f2937"
           cornerRadius={toPx(r)}
         />
-      </Layer>
+      </Group>
     )
   }
   if (c.type === 'conveyor') {
