@@ -1,0 +1,115 @@
+"""Tests for the OpenCV-based PNG floor-plan parser."""
+
+from __future__ import annotations
+
+import io
+
+import cv2
+import numpy as np
+import pytest
+
+from app.services.image_floor_plan import parse_image
+
+
+def _white_image(w_px: int = 400, h_px: int = 400) -> np.ndarray:
+    return np.full((h_px, w_px), 255, dtype=np.uint8)
+
+
+def _encode_png(arr: np.ndarray) -> bytes:
+    ok, buf = cv2.imencode(".png", arr)
+    assert ok
+    return io.BytesIO(buf.tobytes()).getvalue()
+
+
+def test_parse_empty_image_returns_no_rects():
+    img = _white_image()
+    result = parse_image(_encode_png(img), floor_w_m=10.0, floor_h_m=10.0)
+    assert result.n_walls == 0
+    assert result.n_obstacles == 0
+    assert result.suggested_cell_envelope_mm == (10000.0, 10000.0)
+
+
+def test_parse_single_obstacle_classifies_as_obstacle():
+    """A single compact dark square should come back as one obstacle."""
+    img = _white_image(400, 400)
+    # 60×60 px square at center of a 10m × 10m floor → 1.5×1.5 m obstacle
+    cv2.rectangle(img, (170, 170), (230, 230), 0, thickness=-1)
+    result = parse_image(
+        _encode_png(img), floor_w_m=10.0, floor_h_m=10.0,
+        treat_largest_as_boundary=False,  # only one shape — don't drop it
+    )
+    assert result.n_obstacles == 1
+    assert result.n_walls == 0
+    r = result.rects[0]
+    assert r.kind == "obstacle"
+    # 60 px × (10000 mm / 400 px) = 1500 mm; allow 5% slop for Otsu/morph.
+    assert 1400 <= r.width_mm <= 1600
+    assert 1400 <= r.depth_mm <= 1600
+
+
+def test_parse_thin_rect_classifies_as_wall():
+    """A long thin rect should be labelled as a wall."""
+    img = _white_image(400, 400)
+    # 300 px × 6 px horizontal bar → 7.5 m × 0.15 m → aspect 50 (>> 8)
+    cv2.rectangle(img, (50, 200), (350, 206), 0, thickness=-1)
+    result = parse_image(
+        _encode_png(img), floor_w_m=10.0, floor_h_m=10.0,
+        treat_largest_as_boundary=False,
+    )
+    assert result.n_walls == 1
+    assert result.n_obstacles == 0
+    assert result.rects[0].kind == "wall"
+
+
+def test_polygon_corners_form_closed_rectangle():
+    """Each rect's polygon must be 5 points (last == first) and convex."""
+    img = _white_image(400, 400)
+    cv2.rectangle(img, (100, 100), (300, 200), 0, thickness=-1)
+    result = parse_image(
+        _encode_png(img), floor_w_m=10.0, floor_h_m=10.0,
+        treat_largest_as_boundary=False,
+    )
+    assert len(result.rects) == 1
+    poly = result.rects[0].polygon
+    assert len(poly) == 5
+    assert poly[0] == poly[-1]
+
+
+def test_invalid_floor_size_raises():
+    img = _white_image()
+    with pytest.raises(ValueError):
+        parse_image(_encode_png(img), floor_w_m=0.0, floor_h_m=10.0)
+
+
+def test_unimplemented_modes_raise_clearly():
+    img = _white_image()
+    for mode in ("llm", "hybrid"):
+        with pytest.raises(NotImplementedError) as e:
+            parse_image(_encode_png(img), floor_w_m=10.0, floor_h_m=10.0, mode=mode)  # type: ignore[arg-type]
+        assert "reserved" in str(e.value)
+
+
+def test_corrupt_image_raises_value_error():
+    with pytest.raises(ValueError):
+        parse_image(b"not an image", floor_w_m=10.0, floor_h_m=10.0)
+
+
+def test_largest_dropped_when_treat_as_boundary():
+    """A large outer frame + small inner square: only the inner survives."""
+    img = _white_image(400, 400)
+    # Outer frame (drawn as 4 disconnected thin rects so each is its own
+    # contour, plus one big inner shape).
+    cv2.rectangle(img, (10, 10), (390, 14), 0, thickness=-1)   # top wall
+    cv2.rectangle(img, (10, 10), (14, 390), 0, thickness=-1)   # left wall
+    cv2.rectangle(img, (386, 10), (390, 390), 0, thickness=-1) # right wall
+    cv2.rectangle(img, (10, 386), (390, 390), 0, thickness=-1) # bottom wall
+    cv2.rectangle(img, (180, 180), (220, 220), 0, thickness=-1)  # small obstacle
+    out_drop = parse_image(
+        _encode_png(img), floor_w_m=10.0, floor_h_m=10.0,
+        treat_largest_as_boundary=True,
+    )
+    out_keep = parse_image(
+        _encode_png(img), floor_w_m=10.0, floor_h_m=10.0,
+        treat_largest_as_boundary=False,
+    )
+    assert len(out_drop.rects) == len(out_keep.rects) - 1

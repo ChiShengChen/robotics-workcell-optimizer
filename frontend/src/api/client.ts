@@ -135,6 +135,30 @@ export const api = {
     }
     return (await resp.json()) as CadImportResponse
   },
+
+  importImage: async (
+    file: File,
+    opts: { floor_w_m: number; floor_h_m: number; mode?: 'cv' | 'llm' | 'hybrid'; margin_mm?: number },
+    signal?: AbortSignal,
+  ): Promise<CadImportResponse> => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('floor_w_m', String(opts.floor_w_m))
+    form.append('floor_h_m', String(opts.floor_h_m))
+    form.append('mode', opts.mode ?? 'cv')
+    if (opts.margin_mm !== undefined) form.append('margin_mm', String(opts.margin_mm))
+    const resp = await fetch(`${BASE_URL}/cad/import-image`, {
+      method: 'POST',
+      body: form,
+      signal,
+    })
+    if (!resp.ok) {
+      let detail: unknown = await resp.text()
+      try { detail = JSON.parse(detail as string) } catch { /* keep raw */ }
+      throw new ApiError(resp.status, detail)
+    }
+    return (await resp.json()) as CadImportResponse
+  },
 }
 
 /** Stream SA progress via fetch + SSE parsing.

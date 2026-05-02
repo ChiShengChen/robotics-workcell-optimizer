@@ -1,6 +1,8 @@
 """CAD floor-plan endpoints.
 
   POST /api/cad/import-dxf   — multipart upload of an ASCII DXF
+  POST /api/cad/import-image — multipart upload of a top-down PNG / JPG
+                                floor plan; OpenCV detects walls + obstacles
   GET  /api/cad/samples      — list bundled sample floor plans
   POST /api/cad/load-sample  — parse one bundled sample by id
 
@@ -13,11 +15,12 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.obstacle import Obstacle
 from app.services.cad_import import parse_dxf
+from app.services.image_floor_plan import parse_image
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/cad", tags=["cad"])
@@ -145,6 +148,80 @@ async def import_dxf(
         units_assumed=result.units_assumed,
         n_entities_imported=result.n_entities_imported,
         n_entities_skipped=result.n_entities_skipped,
+    )
+
+
+@router.post("/import-image", response_model=CadImportResponse)
+async def import_image(
+    file: UploadFile = File(..., description="Top-down floor plan PNG / JPG."),
+    floor_w_m: float = Form(..., description="Real-world width of the image in metres."),
+    floor_h_m: float = Form(..., description="Real-world height of the image in metres."),
+    mode: str = Form("cv", description="Parser mode — 'cv' (OpenCV today). 'llm' / 'hybrid' reserved."),
+    margin_mm: float = Form(200.0, description="Origin shift so smallest (x,y) lands at (margin_mm, margin_mm)."),
+) -> CadImportResponse:
+    """Detect walls + obstacles in a top-down floor plan image.
+
+    The image must be a clean top-down render (dark walls / obstacles on a
+    light background). Returns the same `CadImportResponse` shape as the
+    DXF importer so the frontend treats both pipelines identically — the
+    detected rectangles get wired straight into `WorkcellSpec.obstacles`
+    and the existing scoring / SA / CP-SAT pipeline picks them up.
+
+    `mode` is a forward-looking hook: only 'cv' is implemented today.
+    'llm' / 'hybrid' will route the OpenCV-detected rects through a
+    vision LLM for semantic labelling (wall / column / equipment / door)
+    without changing the endpoint signature.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file uploaded.")
+    name = file.filename.lower()
+    if not (name.endswith(".png") or name.endswith(".jpg") or name.endswith(".jpeg")):
+        raise HTTPException(
+            status_code=400, detail="Upload a .png / .jpg / .jpeg file.",
+        )
+    if floor_w_m <= 0 or floor_h_m <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="floor_w_m and floor_h_m must be positive metres.",
+        )
+    if mode not in ("cv", "llm", "hybrid"):
+        raise HTTPException(
+            status_code=400, detail=f"mode must be one of cv/llm/hybrid, got {mode!r}.",
+        )
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    try:
+        result = parse_image(
+            raw, floor_w_m=floor_w_m, floor_h_m=floor_h_m,
+            mode=mode, margin_mm=margin_mm,  # type: ignore[arg-type]
+        )
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Image parse failed")
+        raise HTTPException(
+            status_code=422, detail=f"Image parse failed: {e}",
+        ) from e
+    return CadImportResponse(
+        obstacles=[
+            Obstacle(
+                id=r.id,
+                polygon=r.polygon,
+                closed=True,
+                source_layer=r.kind,        # 'wall' | 'obstacle'
+                source_entity=r.source,     # 'image_cv' for now
+                label=f"{r.kind} ({r.width_mm:.0f}×{r.depth_mm:.0f} mm)",
+            )
+            for r in result.rects
+        ],
+        bounding_box_mm=result.bounding_box_mm,
+        suggested_cell_envelope_mm=result.suggested_cell_envelope_mm,
+        units_assumed=f"image px → mm (floor {result.floor_size_mm[0]:.0f}×{result.floor_size_mm[1]:.0f} mm; mode={result.mode})",
+        n_entities_imported=len(result.rects),
+        n_entities_skipped=result.n_skipped,
     )
 
 

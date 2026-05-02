@@ -24,6 +24,7 @@ export function InputPanel() {
   const setNVariants = useLayoutStore((s) => s.setNVariants)
   const loadExample = useLayoutStore((s) => s.loadExample)
   const importCadFloorPlan = useLayoutStore((s) => s.importCadFloorPlan)
+  const importCadImage = useLayoutStore((s) => s.importCadImage)
   const loadCadSample = useLayoutStore((s) => s.loadCadSample)
   const clearObstacles = useLayoutStore((s) => s.clearObstacles)
   const obstacleCount = useLayoutStore((s) => s.spec?.obstacles?.length ?? 0)
@@ -36,7 +37,12 @@ export function InputPanel() {
   const [promptOpen, setPromptOpen] = useState(false)
   const [loadingSampleId, setLoadingSampleId] = useState<string | null>(null)
   const [importingCad, setImportingCad] = useState(false)
+  const [importingImage, setImportingImage] = useState(false)
+  const [pendingImage, setPendingImage] = useState<File | null>(null)
+  const [imgFloorW, setImgFloorW] = useState('10')
+  const [imgFloorH, setImgFloorH] = useState('8')
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const imageInputRef = useRef<HTMLInputElement>(null)
 
   const promptCategories = useMemo(() => promptLibraryByCategory(), [])
 
@@ -126,6 +132,106 @@ export function InputPanel() {
               }
             }}
           />
+
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="w-full justify-start"
+            disabled={importingImage}
+            onClick={() => imageInputRef.current?.click()}
+            title="Upload a top-down floor-plan PNG / JPG; OpenCV detects walls + obstacles"
+          >
+            {importingImage ? (
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Map className="mr-1 h-3.5 w-3.5" />
+            )}
+            Import floor plan (.png / .jpg)…
+          </Button>
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/png,image/jpeg"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (!f) return
+              setPendingImage(f)
+              if (imageInputRef.current) imageInputRef.current.value = ''
+            }}
+          />
+          {pendingImage && (
+            <div className="space-y-2 rounded border border-input bg-muted/30 p-2 text-[11px]">
+              <div className="text-slate-700">
+                <span className="font-medium">{pendingImage.name}</span>
+                <span className="ml-1 text-slate-400">
+                  ({(pendingImage.size / 1024).toFixed(0)} KB)
+                </span>
+              </div>
+              <div className="text-[10px] text-slate-500">
+                Real-world floor size this image represents (metres):
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  min={0.5}
+                  max={100}
+                  step={0.1}
+                  value={imgFloorW}
+                  onChange={(e) => setImgFloorW(e.target.value)}
+                  className="w-14 rounded border border-input bg-background px-1.5 py-0.5 text-xs"
+                />
+                <span className="text-slate-400">×</span>
+                <input
+                  type="number"
+                  min={0.5}
+                  max={100}
+                  step={0.1}
+                  value={imgFloorH}
+                  onChange={(e) => setImgFloorH(e.target.value)}
+                  className="w-14 rounded border border-input bg-background px-1.5 py-0.5 text-xs"
+                />
+                <span className="text-slate-400">m</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="ml-auto h-6"
+                  disabled={importingImage}
+                  onClick={async () => {
+                    const w = parseFloat(imgFloorW)
+                    const h = parseFloat(imgFloorH)
+                    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return
+                    setImportingImage(true)
+                    try {
+                      await importCadImage(pendingImage, { floor_w_m: w, floor_h_m: h })
+                      setPendingImage(null)
+                    } catch {
+                      /* error already in store */
+                    } finally {
+                      setImportingImage(false)
+                    }
+                  }}
+                >
+                  {importingImage ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    'Detect'
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 px-1.5"
+                  onClick={() => setPendingImage(null)}
+                  title="Cancel"
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
 
         {cadSamples.length > 0 && (

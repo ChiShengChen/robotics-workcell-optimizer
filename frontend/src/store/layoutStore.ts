@@ -5,6 +5,7 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { ApiError, api, optimizeStream } from '@/api/client'
 import type {
+  CadImportResponse,
   CPSATOptimizeResponse,
   ExampleSpec,
   LayoutProposal,
@@ -72,6 +73,10 @@ interface LayoutState {
   cancelOptimize: () => void
   loadExample: (example: ExampleSpec) => Promise<void>
   importCadFloorPlan: (file: File, opts?: { scale_to_mm?: number; margin_mm?: number }) => Promise<void>
+  importCadImage: (
+    file: File,
+    opts: { floor_w_m: number; floor_h_m: number; mode?: 'cv' | 'llm' | 'hybrid' },
+  ) => Promise<void>
   loadCadSample: (id: string) => Promise<void>
   clearObstacles: () => void
   resetAll: () => void
@@ -95,6 +100,56 @@ function describeError(err: unknown): string {
 let scoreDebounceTimer: ReturnType<typeof setTimeout> | null = null
 let scoreAbortController: AbortController | null = null
 let optimizeAbortController: AbortController | null = null
+
+/** Shared writer used by every CAD-import path (DXF / image / sample).
+ *  Merges obstacles + suggested envelope onto the current spec (or seeds a
+ *  fresh spec) and clears stale proposals — they were laid out without the
+ *  new obstacles. */
+function applyCadResult(
+  set: (partial: Partial<LayoutState>) => void,
+  get: () => LayoutState,
+  r: CadImportResponse,
+  source: string,
+): void {
+  const existing = get().spec
+  const envelope: [number, number] = (r.suggested_cell_envelope_mm ??
+    existing?.cell_envelope_mm ?? [8000, 6000]) as [number, number]
+  const note =
+    `${source}: ${r.n_entities_imported} obstacles ` +
+    `(${r.n_entities_skipped} skipped); cell envelope set to ` +
+    `${envelope[0].toFixed(0)}×${envelope[1].toFixed(0)} mm.`
+  const newSpec: WorkcellSpec = existing
+    ? {
+        ...existing,
+        obstacles: r.obstacles,
+        cell_envelope_mm: envelope,
+        assumptions: [...existing.assumptions, note],
+      }
+    : {
+        schema_version: '1.0',
+        cell_envelope_mm: envelope,
+        components: [],
+        constraints: [],
+        throughput: {
+          cases_per_hour_target: 500,
+          operating_hours_per_day: 20,
+          sku_count: 1,
+          mixed_sequence: false,
+        },
+        obstacles: r.obstacles,
+        assumptions: [note + ' Run Extract to fill in the rest of the spec.'],
+        notes: '',
+      }
+  set({
+    spec: newSpec,
+    proposals: [],
+    activeProposalId: null,
+    scoreByProposal: {},
+    scoreHistory: [],
+    lastOptimization: null,
+    lastCPSAT: null,
+  })
+}
 
 function clampPose(
   rect: Rect,
@@ -440,41 +495,18 @@ export const useLayoutStore = create<LayoutState>()(
         set({ errors: [] })
         try {
           const r = await api.importDxf(file, opts)
-          // Apply obstacles + suggested envelope to current spec (or create one).
-          const existing = get().spec
-          const envelope = r.suggested_cell_envelope_mm ?? existing?.cell_envelope_mm ?? [8000, 6000]
-          const newSpec: WorkcellSpec = existing
-            ? {
-                ...existing,
-                obstacles: r.obstacles,
-                cell_envelope_mm: envelope,
-                assumptions: [
-                  ...existing.assumptions,
-                  `CAD imported: ${r.n_entities_imported} obstacles (${r.n_entities_skipped} skipped); cell envelope set to ${envelope[0].toFixed(0)}×${envelope[1].toFixed(0)} mm.`,
-                ],
-              }
-            : {
-                schema_version: '1.0',
-                cell_envelope_mm: envelope,
-                components: [],
-                constraints: [],
-                throughput: { cases_per_hour_target: 500, operating_hours_per_day: 20, sku_count: 1, mixed_sequence: false },
-                obstacles: r.obstacles,
-                assumptions: [
-                  `CAD imported (${r.n_entities_imported} obstacles); enter a prompt + run Extract to fill in the rest of the spec.`,
-                ],
-                notes: '',
-              }
-          set({
-            spec: newSpec,
-            // Clear stale proposals — they were laid out without obstacles.
-            proposals: [],
-            activeProposalId: null,
-            scoreByProposal: {},
-            scoreHistory: [],
-            lastOptimization: null,
-            lastCPSAT: null,
-          })
+          applyCadResult(set, get, r, 'CAD (DXF)')
+        } catch (err) {
+          set({ errors: [describeError(err)] })
+          throw err
+        }
+      },
+
+      importCadImage: async (file, opts) => {
+        set({ errors: [] })
+        try {
+          const r = await api.importImage(file, opts)
+          applyCadResult(set, get, r, `CAD (image, ${opts.floor_w_m}×${opts.floor_h_m} m, mode=${opts.mode ?? 'cv'})`)
         } catch (err) {
           set({ errors: [describeError(err)] })
           throw err

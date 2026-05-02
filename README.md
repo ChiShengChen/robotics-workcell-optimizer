@@ -702,6 +702,38 @@ fallback is the next move.
 as gray polygons in the 2D Konva canvas (closed = filled, open = wall)
 and as semi-transparent **1.5 m extruded walls** in the 3D preview.
 
+### 16g. Image-based floor plan (PNG / JPG)
+
+**Files**: [`backend/app/services/image_floor_plan.py`](backend/app/services/image_floor_plan.py),
+[`backend/app/api/cad.py`](backend/app/api/cad.py) (`POST /api/cad/import-image`)
+
+For users without a DXF, "Import floor plan (.png / .jpg)…" detects
+walls + obstacles directly from a top-down render. Pipeline (mode='cv',
+OpenCV-only today):
+
+1. Otsu-threshold the image → binary mask (dark = wall/obstacle)
+2. `cv2.findContours` → every dark connected region
+3. `cv2.minAreaRect` → rotated bounding rect per contour
+4. Drop the largest (assumed to be the outer wall outline)
+5. Classify by aspect ratio: `max(w,h)/min(w,h) > 8` → **wall**,
+   else → **obstacle**
+6. Map pixel coords → mm using the user-supplied real-world floor size
+   (entered as `W × H` metres in the upload dialog). Pixel y-down →
+   world y-up to match the rest of the codebase
+7. Emit each rect as a 4-corner closed polygon → flows straight into
+   the existing `WorkcellSpec.obstacles` pipeline (polygon-vs-rect
+   intersection, SA gradient, CP-SAT constraint) for free
+
+`mode` is a forward-looking hook: 'llm' / 'hybrid' raise
+`NotImplementedError` today, but the endpoint signature is stable so
+the OpenCV-detected rects can later be routed through a vision LLM for
+semantic labelling (wall / column / equipment / door) without any
+schema or UI change.
+
+UI: pick the file → small inline form appears with two number inputs
+for the real-world W × H in metres → click **Detect** → obstacles
++ envelope are applied to the active spec.
+
 ## 17. Multi-arm support (dual / triple / quad)
 
 **Files**: [`backend/app/services/layout.py`](backend/app/services/layout.py),
