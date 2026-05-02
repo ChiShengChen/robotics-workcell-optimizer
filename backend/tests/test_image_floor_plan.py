@@ -81,12 +81,25 @@ def test_invalid_floor_size_raises():
         parse_image(_encode_png(img), floor_w_m=0.0, floor_h_m=10.0)
 
 
-def test_unimplemented_modes_raise_clearly():
+def test_llm_mode_still_reserved():
     img = _white_image()
-    for mode in ("llm", "hybrid"):
-        with pytest.raises(NotImplementedError) as e:
-            parse_image(_encode_png(img), floor_w_m=10.0, floor_h_m=10.0, mode=mode)  # type: ignore[arg-type]
-        assert "reserved" in str(e.value)
+    with pytest.raises(NotImplementedError) as e:
+        parse_image(_encode_png(img), floor_w_m=10.0, floor_h_m=10.0, mode="llm")  # type: ignore[arg-type]
+    assert "reserved" in str(e.value)
+
+
+def test_hybrid_mode_falls_back_to_auto_without_api_key(monkeypatch):
+    """No GOOGLE_API_KEY → hybrid silently falls back to 'auto' rather than
+    raising; UX-wise we want 'something' over an opaque error."""
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    img = _white_image(400, 400)
+    cv2.rectangle(img, (170, 170), (230, 230), 0, thickness=-1)
+    out = parse_image(
+        _encode_png(img), floor_w_m=10.0, floor_h_m=10.0,
+        mode="hybrid", treat_largest_as_boundary=False,
+    )
+    # Should have detected the square via auto fallback.
+    assert out.n_walls + out.n_obstacles >= 1
 
 
 def test_unknown_mode_raises_value_error():

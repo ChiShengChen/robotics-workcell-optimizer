@@ -1,29 +1,36 @@
 """Floor-plan PNG/JPG → obstacle polygons.
 
-Three parser modes:
+Four parser modes:
 
-  mode='auto'  : (DEFAULT) per-contour smart dispatch — solid filled
-                 shapes (circle, diamond, triangle) keep their single
-                 minAreaRect, while sparse / crossed contours (X-shapes,
-                 plus signs, T-intersections) get re-extracted with
-                 Hough line clustering. Combines the strengths of cv +
-                 hough without their respective failure modes.
+  mode='hybrid' : OpenCV for geometry + Gemini Vision for semantic
+                  judgement. Sends the image AND the cv-mode candidate
+                  rects to the vision LLM, which then keeps / drops /
+                  splits / re-classifies them. Falls back to 'auto' if
+                  no GOOGLE_API_KEY is configured. Best results for
+                  ambiguous floor plans where pure CV can't tell a
+                  decorative outline from a real wall — e.g. an X of
+                  crossing walls vs a diamond-shaped column.
 
-  mode='cv'    : Otsu → findContours → minAreaRect per connected region.
-                 Fast, perfect for vector-style plans where every shape is
-                 already its own connected blob. Fails on touching shapes
-                 (e.g. an X = two crossing bars get merged into ONE rect).
+  mode='auto'   : Per-contour smart dispatch — solid filled shapes
+                  (circle, diamond, triangle) keep their single
+                  minAreaRect, while sparse / crossed contours
+                  (X-shapes, plus signs, T-intersections) get
+                  re-extracted with Hough line clustering. Pure CV.
 
-  mode='hough' : Otsu → Canny → HoughLinesP → cluster line segments by
-                 (angle, perpendicular offset) → one rect per cluster.
-                 Recovers individual bars in X-shapes and crossing walls,
-                 but over-segments closed polygon outlines (a diamond
-                 outline becomes 4 separate walls).
+  mode='cv'     : Otsu → findContours → minAreaRect per connected
+                  region. Fast, perfect for vector-style plans where
+                  every shape is its own connected blob. Fails on
+                  touching shapes (X = two crossing bars get merged).
 
-Pipeline shared by all three:
+  mode='hough'  : Otsu → Canny → HoughLinesP → cluster line segments
+                  by (angle, perpendicular offset). Recovers individual
+                  bars in X-shapes but over-segments closed polygon
+                  outlines (a diamond outline → 4 walls).
+
+Pipeline shared by cv / hough / auto:
   1. Decode bytes (OpenCV).
   2. Otsu-threshold to binary: dark = wall / obstacle, light = floor.
-  3. (mode-specific extraction; see the two functions below.)
+  3. (mode-specific extraction; see the four functions below.)
   4. Drop the largest detected region as the outer wall outline when
      treat_largest_as_boundary is True (cell envelope already encodes it).
   5. Classify by aspect ratio:
@@ -36,17 +43,17 @@ Pipeline shared by all three:
      the existing /api/cad obstacle pipeline (polygon-vs-rect intersection,
      SA gradient, CP-SAT constraint) for free.
 
-Hook left for future:
-  - mode='hybrid' : OpenCV for geometry, vision LLM for semantic labels
-                    (wall vs column vs equipment vs door). Raises
-                    NotImplementedError today; signature is stable so the
-                    endpoint won't change when it's added.
+Hybrid mode bypasses steps 4-5 (the LLM directly emits final classified
+rects) but still runs steps 6-7 to map into the world frame and emit
+polygons.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
 import uuid
 from dataclasses import dataclass, field
 from typing import Literal
@@ -55,6 +62,10 @@ import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+# Gemini Vision config for hybrid mode.
+HYBRID_GEMINI_MODEL = "gemini-2.5-flash"
+HYBRID_MAX_OUTPUT_TOKENS = 4096
 
 # Tuning constants — see module docstring for what each one controls.
 WALL_ASPECT = 8.0          # max(w,h) / min(w,h) above which a rect is a "wall"
@@ -139,16 +150,15 @@ def parse_image(
         margin_mm: shift world coords so the smallest (x, y) sits at
               (margin_mm, margin_mm), matching the DXF importer.
     """
-    if mode in ("llm", "hybrid"):
+    if mode == "llm":
         raise NotImplementedError(
-            f"image parse mode '{mode}' is reserved; use 'auto', 'cv' or "
-            f"'hough'. The 'hybrid' branch will route OpenCV-detected "
-            f"rects through a vision LLM for semantic labels "
-            f"(wall/column/equipment/door)."
+            f"image parse mode 'llm' (LLM-only, no CV pre-pass) is "
+            f"reserved; use 'hybrid' to combine CV geometry with LLM "
+            f"semantic judgement, or 'auto' / 'cv' / 'hough' for pure CV."
         )
-    if mode not in ("auto", "cv", "hough"):
+    if mode not in ("auto", "cv", "hough", "hybrid"):
         raise ValueError(
-            f"unknown mode {mode!r}; expected one of auto/cv/hough/llm/hybrid"
+            f"unknown mode {mode!r}; expected one of auto/cv/hough/hybrid/llm"
         )
     if floor_w_m <= 0 or floor_h_m <= 0:
         raise ValueError("floor_w_m and floor_h_m must be positive metres.")
@@ -171,18 +181,33 @@ def parse_image(
     mm_per_px_x = (floor_w_m * 1000.0) / w_px
     mm_per_px_y = (floor_h_m * 1000.0) / h_px
 
-    # Pass 1: pixel-space rects depend on the mode. Both modes hand back
-    # the same shape: list of ((cx_px, cy_px), (w_mm, h_mm), angle_deg, area_mm2).
+    # Hybrid skips the aspect-ratio classifier — the LLM already classified
+    # each rect — so it returns 5-tuples carrying the kind override. Other
+    # modes return 4-tuples.
     if mode == "cv":
         raw = _extract_rects_minarea(binary, mm_per_px_x, mm_per_px_y)
     elif mode == "hough":
         raw = _extract_rects_hough(binary, mm_per_px_x, mm_per_px_y, w_px, h_px)
+    elif mode == "hybrid":
+        cv_seed = _extract_rects_minarea(binary, mm_per_px_x, mm_per_px_y)
+        raw = _extract_rects_hybrid(
+            image_bytes, cv_seed, mm_per_px_x, mm_per_px_y,
+            w_px, h_px, floor_w_m, floor_h_m,
+        )
+        if raw is None:
+            # LLM unavailable or refused — fall back to auto so the user
+            # still gets *something* without an opaque error.
+            logger.warning("hybrid mode falling back to 'auto' (no LLM key or LLM failed)")
+            raw = _extract_rects_auto(binary, mm_per_px_x, mm_per_px_y, w_px, h_px)
+            mode = "auto"  # for the result.mode field
     else:  # 'auto'
         raw = _extract_rects_auto(binary, mm_per_px_x, mm_per_px_y, w_px, h_px)
 
     # Drop the largest (outer wall outline) when requested — same convention
     # as the DXF importer.
-    if treat_largest_as_boundary and raw:
+    # treat_largest_as_boundary applies only to pure-CV modes — the LLM
+    # is told to skip the outer frame itself.
+    if treat_largest_as_boundary and raw and mode != "hybrid":
         idx_largest = max(range(len(raw)), key=lambda i: raw[i][3])
         boundary_drop = raw.pop(idx_largest)
         logger.info(
@@ -191,19 +216,26 @@ def parse_image(
 
     rects: list[FloorPlanRect] = []
     n_skipped = 0
-    for (cx_px, cy_px), (w_mm, h_mm), angle, area_mm2 in raw:
+    for entry in raw:
+        # Tuples are 4 (cv/hough/auto) or 5 with a kind override (hybrid).
+        if len(entry) == 5:
+            (cx_px, cy_px), (w_mm, h_mm), angle, area_mm2, kind_override = entry
+        else:
+            (cx_px, cy_px), (w_mm, h_mm), angle, area_mm2 = entry
+            kind_override = None
         if area_mm2 < min_area_mm2:
             n_skipped += 1
             continue
         # Pixel origin = top-left, y-down. World origin = bottom-left, y-up.
         cx_mm = cx_px * mm_per_px_x + margin_mm
         cy_mm = (h_px - cy_px) * mm_per_px_y + margin_mm
-        # In OpenCV, the (w, h) returned for a minAreaRect is in the
-        # rect's local frame; we just keep (longer, shorter).
-        long_side = max(w_mm, h_mm)
-        short_side = min(w_mm, h_mm)
-        aspect = long_side / max(1e-3, short_side)
-        kind: Literal["wall", "obstacle"] = "wall" if aspect > wall_aspect else "obstacle"
+        if kind_override in ("wall", "obstacle"):
+            kind: Literal["wall", "obstacle"] = kind_override
+        else:
+            long_side = max(w_mm, h_mm)
+            short_side = min(w_mm, h_mm)
+            aspect = long_side / max(1e-3, short_side)
+            kind = "wall" if aspect > wall_aspect else "obstacle"
         polygon = _rotated_rect_polygon(cx_mm, cy_mm, w_mm, h_mm, angle)
         rects.append(
             FloorPlanRect(
@@ -216,6 +248,7 @@ def parse_image(
                 depth_mm=h_mm,
                 yaw_deg=float(angle),
                 area_mm2=area_mm2,
+                source="image_hybrid" if mode == "hybrid" else "image_cv",
             )
         )
 
@@ -410,6 +443,151 @@ def _extract_rects_hough(
         h_mm = h_rot_px * mm_per_px_y
         out.append(((cx_px, cy_px), (w_mm, h_mm), angle, w_mm * h_mm))
 
+    return out
+
+
+def _extract_rects_hybrid(
+    image_bytes: bytes,
+    cv_seed: list[tuple[tuple[float, float], tuple[float, float], float, float]],
+    mm_per_px_x: float,
+    mm_per_px_y: float,
+    w_px: int,
+    h_px: int,
+    floor_w_m: float,
+    floor_h_m: float,
+) -> list[tuple[tuple[float, float], tuple[float, float], float, float, str]] | None:
+    """Combine OpenCV geometry with Gemini Vision semantic judgement.
+
+    Sends the original image AND the cv-mode candidate rects to Gemini.
+    The model is asked to keep / drop / split / re-classify the candidates
+    AND optionally add anything OpenCV missed. Returns 5-tuples carrying
+    (center_px, size_mm, angle_deg, area_mm2, kind_override) so the
+    caller skips the aspect-ratio classifier.
+
+    Returns None when GOOGLE_API_KEY is missing or the LLM call / parse
+    fails — caller should fall back to a pure-CV mode in that case.
+    """
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        return None
+
+    # Serialise cv candidates compactly for the prompt.
+    candidates: list[dict[str, float | int | str]] = []
+    for i, ((cx_px, cy_px), (w_mm, h_mm), angle, area_mm2) in enumerate(cv_seed):
+        # Rough aspect-ratio hint so the model has a starting class.
+        long_side = max(w_mm, h_mm)
+        short_side = min(w_mm, h_mm)
+        aspect = long_side / max(1e-3, short_side)
+        cv_w_px = w_mm / mm_per_px_x
+        cv_h_px = h_mm / mm_per_px_y
+        candidates.append({
+            "id": i,
+            "cx_px": round(cx_px, 1),
+            "cy_px": round(cy_px, 1),
+            "w_px": round(cv_w_px, 1),
+            "h_px": round(cv_h_px, 1),
+            "angle_deg": round(angle, 1),
+            "size_mm": f"{w_mm:.0f}x{h_mm:.0f}",
+            "aspect_ratio": round(aspect, 2),
+        })
+
+    prompt = (
+        f"You are looking at a top-down floor plan. The image is "
+        f"{w_px}x{h_px} pixels and represents a {floor_w_m:.1f} m x "
+        f"{floor_h_m:.1f} m physical floor. Pixel coords: top-left = (0,0), "
+        f"x-right, y-down.\n\n"
+        f"OpenCV detected the following candidate rectangles (pixel space):\n"
+        f"{json.dumps(candidates, indent=2)}\n\n"
+        "Your job: produce the FINAL list of rectangles. Be aggressive about "
+        "fixing OpenCV's mistakes. For each output rectangle, return:\n"
+        '  {"cx_px": float, "cy_px": float, "w_px": float, "h_px": float, '
+        '"angle_deg": float, "kind": "wall" | "obstacle", "label": "<short>"}\n\n'
+        "Rules:\n"
+        "- 'wall' = thin / long structure. INCLUDES each individual bar of "
+        "an X / + / T / cross — split them into separate walls.\n"
+        "- 'obstacle' = compact filled or outline shape (column, equipment, "
+        "pallet, machine). KEEP an outline diamond / triangle / circle as "
+        "ONE obstacle, do not split into edges.\n"
+        "- DROP the outermost frame contour (it represents the cell envelope, "
+        "not a wall). Drop text labels, dimension annotations, scale bars.\n"
+        "- If OpenCV merged an X-shape into a single tilted bbox, REPLACE it "
+        "with two correctly-oriented thin walls along the actual bars.\n"
+        "- If OpenCV gave a single rect for an outline shape (diamond / "
+        "triangle), KEEP it as one obstacle.\n"
+        "- You may add rectangles OpenCV missed and skip ones it hallucinated.\n"
+        "Return ONLY a JSON array of objects (no prose, no markdown). Empty "
+        "array is allowed if the image has nothing meaningful."
+    )
+
+    try:
+        from google import genai
+    except ImportError:
+        logger.warning("google-genai not installed; hybrid mode unavailable")
+        return None
+
+    try:
+        client = genai.Client(api_key=api_key)
+        resp = client.models.generate_content(
+            model=HYBRID_GEMINI_MODEL,
+            contents=[
+                {"parts": [
+                    {"inline_data": {"mime_type": "image/png", "data": image_bytes}},
+                    {"text": prompt},
+                ]},
+            ],
+            config={
+                "temperature": 0.0,
+                "max_output_tokens": HYBRID_MAX_OUTPUT_TOKENS,
+                "response_mime_type": "application/json",
+            },
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Gemini Vision call failed")
+        return None
+
+    text = (resp.text or "").strip()
+    if not text:
+        logger.warning("Gemini Vision returned empty body")
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        # Some models return ```json ... ``` despite the JSON mime hint.
+        cleaned = text.strip("`").lstrip("json").strip()
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            logger.warning("Gemini Vision JSON parse failed; first 200 chars: %s",
+                           text[:200])
+            return None
+
+    if not isinstance(parsed, list):
+        logger.warning("Gemini Vision didn't return a top-level array; got %s",
+                       type(parsed).__name__)
+        return None
+
+    out: list[tuple[tuple[float, float], tuple[float, float], float, float, str]] = []
+    for r in parsed:
+        try:
+            cx_px = float(r["cx_px"])
+            cy_px = float(r["cy_px"])
+            w_p = float(r["w_px"])
+            h_p = float(r["h_px"])
+            angle = float(r.get("angle_deg", 0.0))
+            kind = str(r.get("kind", "")).lower()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if kind not in ("wall", "obstacle"):
+            continue
+        if w_p <= 0 or h_p <= 0:
+            continue
+        w_mm = w_p * mm_per_px_x
+        h_mm = h_p * mm_per_px_y
+        out.append(((cx_px, cy_px), (w_mm, h_mm), angle, w_mm * h_mm, kind))
+    logger.info(
+        "hybrid mode: cv_seed=%d candidates -> LLM kept %d rects",
+        len(cv_seed), len(out),
+    )
     return out
 
 

@@ -75,12 +75,13 @@ def overlay(img_path: Path) -> Path:
         raise RuntimeError(f"could not decode {img_path}")
 
     cv_result = parse_image(raw, FLOOR_W_M, FLOOR_H_M, mode="cv")
-    hough_result = parse_image(raw, FLOOR_W_M, FLOOR_H_M, mode="hough")
     auto_result = parse_image(raw, FLOOR_W_M, FLOOR_H_M, mode="auto")
+    # hybrid silently falls back to auto when GOOGLE_API_KEY is missing.
+    hybrid_result = parse_image(raw, FLOOR_W_M, FLOOR_H_M, mode="hybrid")
 
     cv_panel = _draw_overlay(base.copy(), cv_result)
-    hough_panel = _draw_overlay(base.copy(), hough_result)
     auto_panel = _draw_overlay(base.copy(), auto_result)
+    hybrid_panel = _draw_overlay(base.copy(), hybrid_result)
 
     h_px, w_px, _ = cv_panel.shape
     header_h = 56
@@ -94,22 +95,23 @@ def overlay(img_path: Path) -> Path:
         return h
 
     cv_header = _header(
-        f"mode=cv (minAreaRect)  -  {cv_result.n_walls}W / {cv_result.n_obstacles}O"
-    )
-    hough_header = _header(
-        f"mode=hough (HoughLinesP)  -  {hough_result.n_walls}W / {hough_result.n_obstacles}O"
+        f"mode=cv  -  {cv_result.n_walls}W / {cv_result.n_obstacles}O"
     )
     auto_header = _header(
-        f"mode=auto (per-contour)  -  {auto_result.n_walls}W / {auto_result.n_obstacles}O"
+        f"mode=auto  -  {auto_result.n_walls}W / {auto_result.n_obstacles}O"
+    )
+    hybrid_header = _header(
+        f"mode=hybrid  -  {hybrid_result.n_walls}W / {hybrid_result.n_obstacles}O"
+        + (f"  ({hybrid_result.mode} fallback)" if hybrid_result.mode != "hybrid" else "")
     )
 
     cv_col = np.vstack([cv_header, cv_panel])
-    hough_col = np.vstack([hough_header, hough_panel])
     auto_col = np.vstack([auto_header, auto_panel])
+    hybrid_col = np.vstack([hybrid_header, hybrid_panel])
 
     # Thin vertical separator
     sep = np.full((cv_col.shape[0], 6, 3), (200, 200, 200), dtype=np.uint8)
-    out = np.hstack([cv_col, sep, hough_col, sep, auto_col])
+    out = np.hstack([cv_col, sep, auto_col, sep, hybrid_col])
 
     # Top title
     title_h = 40
