@@ -4,13 +4,9 @@ End-to-end pipeline: **natural language → structured spec → robot selection
 → optimized 2D layout → interactive editing → re-optimization (SA + CP-SAT)
 → 3D animated preview**.
 
-> 🌐 **Live demo**: <https://robotics-workcell-demo.vercel.app>
-> ⚙️ **Backend API docs**: <https://xyz-robotics-backend.onrender.com/docs>
-> 📦 **Source**: <https://github.com/ChiShengChen/robotics-workcell-optimizer>
->
-> ⚠️ Backend runs on Render's free tier and sleeps after 15 minutes of
-> inactivity — the first request after a sleep cold-starts in 30–50 s.
-> Hit `/api/health` once to wake it before showing the UI.
+> Bundled blueprints (`render.yaml`, `vercel.json`) deploy a free-tier
+> instance in ~10 minutes — see [Deployment](#deployment-vercel--render)
+> below.
 
 ![architecture](docs/architecture.svg)
 
@@ -1015,27 +1011,74 @@ EOAT into the air. Wrap fixes both.
 
 # Setup
 
+## Local development
+
+**Prerequisites**
+- Python ≥ 3.11 (3.13 recommended)
+- Node ≥ 18 + pnpm 8 (`npm install -g pnpm` if missing)
+- macOS / Linux / WSL2; native Windows works but `scripts/dev.sh` is
+  bash — use `concurrently` directly or run the two services in
+  separate terminals
+- At least one LLM key: `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
+  `GOOGLE_API_KEY` (Gemini has a free tier — easiest to start with).
+  Without any key the LLM extract step won't work, but the bundled
+  pre-extracted examples still let you exercise everything else.
+
+**One-shot install + run**
+
 ```bash
+# Clone
+git clone https://github.com/ChiShengChen/robotics-workcell-optimizer.git
+cd robotics-workcell-optimizer
+
 # Backend
 cd backend
-python3.13 -m venv .venv && source .venv/bin/activate
+python3.13 -m venv .venv
+source .venv/bin/activate
 pip install -e .[dev]
-cp .env.example .env  # add at least one of ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY
+cp .env.example .env
+# edit .env and paste at least one of:
+#   ANTHROPIC_API_KEY=sk-ant-...
+#   OPENAI_API_KEY=sk-...
+#   GOOGLE_API_KEY=AIza...
 
 # Frontend
 cd ../frontend
 pnpm install
 
-# Run both
+# Run both (backend on :8000, frontend on :5173)
 cd ..
 bash scripts/dev.sh
-# → http://localhost:5173
+# → http://localhost:5173 (Vite proxies /api → :8000 in dev)
 ```
 
-Without an LLM key:
+**Verify**
+
+```bash
+# Backend health
+curl http://localhost:8000/api/health
+# → {"ok":true}
+
+# Run backend tests (47 tests in <1 s)
+cd backend && source .venv/bin/activate && pytest -q
+
+# Frontend type check + production build
+cd frontend && pnpm tsc -b && pnpm build
+```
+
+**Without an LLM key**
 - Click **Load example…** in the left panel — the bundled JSON
   examples ship with a pre-extracted `WorkcellSpec`, so the demo
   skips `/api/extract` and runs everything else.
+
+**Common local-dev issues**
+- `pip install` fails on `ortools` → make sure you're on Python 3.11+
+  64-bit (Apple Silicon needs Python ≥ 3.10 from python.org or pyenv,
+  not the system 3.9)
+- Frontend boots but API calls 404 → check `scripts/dev.sh` actually
+  started both processes; `lsof -i :8000` should show `uvicorn`
+- LLM extract returns 500 → check `.env` is in `backend/` (NOT repo
+  root) and the key isn't quoted
 
 ## Deployment (Vercel + Render)
 
@@ -1051,12 +1094,12 @@ Bundled blueprints for a free-tier deployment:
 2. Wait ~5–10 min for the first build (`pip install -e .` pulls
    ortools / numpy / 3 LLM SDKs).
 3. Hit `https://<your-name>.onrender.com/api/health` → `{"ok":true}`.
-   (Reference instance: <https://xyz-robotics-backend.onrender.com/api/health>.)
 
 Free-tier caveats:
 - Service sleeps after **15 min** of no traffic. First request after a
-  sleep cold-starts in 30–50 s. Use UptimeRobot to ping
-  `/api/health` every 5 min if reviewers will hit it ad hoc.
+  sleep cold-starts in 30–50 s. Use UptimeRobot or cron-job.org to ping
+  `/api/health` every 5–10 min if reviewers will hit it ad hoc (see
+  [Keepalive](#keepalive-keep-the-render-backend-warm) below).
 - 512 MB RAM ceiling — SA + LLM extract are fine, CP-SAT can spike to
   ~600 MB during solve and may OOM. If you only demo SA, comment out
   `ortools` in `pyproject.toml` to drop ~150 MB resident.
@@ -1067,8 +1110,6 @@ Free-tier caveats:
    `vercel.json`.
 2. Settings → Environment Variables:
    - `VITE_API_URL` = `https://<your-render-app>.onrender.com/api`
-     (this repo's reference deployment uses
-     `https://xyz-robotics-backend.onrender.com/api`)
    - applies to Production, Preview, Development
 3. Deploy. The frontend at `https://<your-app>.vercel.app` will hit
    the Render backend directly. Backend CORS already allows any
@@ -1079,6 +1120,53 @@ If you'd rather not expose the backend URL to the browser (proxy via
 Vercel edge instead), uncomment the rewrites block in `vercel.json`
 and leave `VITE_API_URL` unset — the frontend then calls relative
 `/api/*` and Vercel rewrites them server-side.
+
+### Keepalive (keep the Render backend warm)
+
+Render free tier sleeps after 15 min of no traffic; the first request
+after wake-up cold-starts in 30–50 s, which feels broken to first-time
+reviewers. Two zero-cost options:
+
+**Option A — cron-job.org** (no code, easiest)
+1. Sign up at <https://cron-job.org> (email only)
+2. **Cronjobs → CREATE CRONJOB**
+3. URL = `https://<your-app>.onrender.com/api/health`,
+   schedule = every 10 min, method = GET
+4. Done. Render dashboard logs should show a `GET /api/health` every
+   10 minutes; service status stays **Live**.
+
+**Option B — UptimeRobot** — same idea, GUI is even simpler, free for
+50 monitors. <https://uptimerobot.com>
+
+A 10-minute ping costs essentially nothing in Render's 750 hr/month
+free quota (still well under the 31×24=744 h/month ceiling).
+
+### Pushing to multiple GitHub remotes
+
+This repo is mirrored on two GitHub orgs. To push to both with one
+command, add the second as a named remote:
+
+```bash
+# Inspect existing remotes
+git remote -v
+
+# Add a second remote (one-time)
+git remote add robox https://github.com/RoboDesign-Agent/ROBOX_workcell_demo.git
+
+# Push current branch to BOTH
+git push origin main && git push robox main
+```
+
+If you'd rather mirror automatically on every `git push`, configure
+the `origin` remote to push to both URLs:
+
+```bash
+git remote set-url --add --push origin https://github.com/ChiShengChen/robotics-workcell-optimizer.git
+git remote set-url --add --push origin https://github.com/RoboDesign-Agent/ROBOX_workcell_demo.git
+# Verify both push URLs appear:
+git remote -v
+# Now `git push origin main` fans out to both.
+```
 
 ## Pipeline summary
 
