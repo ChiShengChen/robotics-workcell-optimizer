@@ -157,8 +157,8 @@ async def import_image(
     floor_w_m: float = Form(..., description="Real-world width of the image in metres."),
     floor_h_m: float = Form(..., description="Real-world height of the image in metres."),
     mode: str = Form(
-        "auto",
-        description="Parser mode: 'auto' (default — per-contour smart dispatch), 'cv', 'hough'. 'llm' / 'hybrid' reserved.",
+        "cv",
+        description="Parser mode (default 'cv'): 'cv' (best for clean vector floor plans), 'auto' (per-contour smart dispatch), 'hough', 'hybrid' (CV + Gemini Vision; needs GOOGLE_API_KEY).",
     ),
     margin_mm: float = Form(200.0, description="Origin shift so smallest (x,y) lands at (margin_mm, margin_mm)."),
 ) -> CadImportResponse:

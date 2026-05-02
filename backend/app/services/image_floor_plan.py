@@ -2,30 +2,37 @@
 
 Four parser modes:
 
-  mode='hybrid' : OpenCV for geometry + Gemini Vision for semantic
-                  judgement. Sends the image AND the cv-mode candidate
-                  rects to the vision LLM, which then keeps / drops /
-                  splits / re-classifies them. Falls back to 'auto' if
-                  no GOOGLE_API_KEY is configured. Best results for
-                  ambiguous floor plans where pure CV can't tell a
-                  decorative outline from a real wall — e.g. an X of
-                  crossing walls vs a diamond-shaped column.
+  mode='cv'     : (DEFAULT) Otsu → findContours → minAreaRect per
+                  connected region. Fast, near-perfect for vector-style
+                  plans where every shape is already its own connected
+                  blob. Empirically the best mode for clean rendered
+                  floor plans (CAD exports, Konva-style PNGs). Only
+                  fails when two physical objects literally share
+                  pixels — e.g. an X = two crossing bars that touch in
+                  the binary mask, which findContours then sees as a
+                  single contour. Use 'hough' or 'hybrid' for those.
 
   mode='auto'   : Per-contour smart dispatch — solid filled shapes
                   (circle, diamond, triangle) keep their single
                   minAreaRect, while sparse / crossed contours
                   (X-shapes, plus signs, T-intersections) get
                   re-extracted with Hough line clustering. Pure CV.
-
-  mode='cv'     : Otsu → findContours → minAreaRect per connected
-                  region. Fast, perfect for vector-style plans where
-                  every shape is its own connected blob. Fails on
-                  touching shapes (X = two crossing bars get merged).
+                  Helps only when shapes physically merge; otherwise
+                  matches or trails 'cv'.
 
   mode='hough'  : Otsu → Canny → HoughLinesP → cluster line segments
                   by (angle, perpendicular offset). Recovers individual
                   bars in X-shapes but over-segments closed polygon
                   outlines (a diamond outline → 4 walls).
+
+  mode='hybrid' : OpenCV for geometry + Gemini Vision for semantic
+                  judgement. Sends the image AND the cv-mode candidate
+                  rects to the vision LLM, which then keeps / drops /
+                  splits / re-classifies them. Falls back to 'auto' if
+                  no GOOGLE_API_KEY is configured. Best results for
+                  ambiguous floor plans (handwritten, scanned, with
+                  text labels, mixed equipment types) where pure CV
+                  can't tell a decorative outline from a real wall.
 
 Pipeline shared by cv / hough / auto:
   1. Decode bytes (OpenCV).
@@ -127,7 +134,7 @@ def parse_image(
     floor_w_m: float,
     floor_h_m: float,
     *,
-    mode: ParseMode = "auto",
+    mode: ParseMode = "cv",
     treat_largest_as_boundary: bool = True,
     min_area_mm2: float = MIN_AREA_MM2,
     wall_aspect: float = WALL_ASPECT,

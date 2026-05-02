@@ -66,7 +66,10 @@ def _draw_overlay(canvas: np.ndarray, result: ImageParseResult, margin_mm: float
     return canvas
 
 
-def overlay(img_path: Path) -> Path:
+def overlay(img_path: Path) -> list[Path]:
+    """Render one overlay PNG per mode next to the input image.
+    Filename pattern: <stem>_overlay_<mode>.png  (e.g. floor_overlay_cv.png).
+    Returns the list of written paths."""
     raw = img_path.read_bytes()
 
     arr = np.frombuffer(raw, dtype=np.uint8)
@@ -74,57 +77,35 @@ def overlay(img_path: Path) -> Path:
     if base is None:
         raise RuntimeError(f"could not decode {img_path}")
 
-    cv_result = parse_image(raw, FLOOR_W_M, FLOOR_H_M, mode="cv")
-    auto_result = parse_image(raw, FLOOR_W_M, FLOOR_H_M, mode="auto")
-    # hybrid silently falls back to auto when GOOGLE_API_KEY is missing.
-    hybrid_result = parse_image(raw, FLOOR_W_M, FLOOR_H_M, mode="hybrid")
+    # Run all four modes. hybrid silently falls back to auto if no LLM key.
+    modes = ("cv", "hough", "auto", "hybrid")
+    written: list[Path] = []
 
-    cv_panel = _draw_overlay(base.copy(), cv_result)
-    auto_panel = _draw_overlay(base.copy(), auto_result)
-    hybrid_panel = _draw_overlay(base.copy(), hybrid_result)
+    for mode in modes:
+        result = parse_image(raw, FLOOR_W_M, FLOOR_H_M, mode=mode)
+        panel = _draw_overlay(base.copy(), result)
 
-    h_px, w_px, _ = cv_panel.shape
-    header_h = 56
-
-    def _header(text: str) -> np.ndarray:
-        h = np.full((header_h, w_px, 3), (245, 245, 245), dtype=np.uint8)
-        cv2.putText(
-            h, text, (16, 36),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (40, 40, 40), 2, cv2.LINE_AA,
+        suffix = (
+            f"  ({result.mode} fallback)"
+            if mode == "hybrid" and result.mode != "hybrid"
+            else ""
         )
-        return h
+        title_h = 56
+        w_px = panel.shape[1]
+        title = np.full((title_h, w_px, 3), (235, 235, 235), dtype=np.uint8)
+        cv2.putText(
+            title,
+            f"{img_path.name}  -  mode={mode}  -  {result.n_walls}W / {result.n_obstacles}O"
+            f"  -  floor {FLOOR_W_M}x{FLOOR_H_M} m{suffix}",
+            (16, 36),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (20, 20, 20), 2, cv2.LINE_AA,
+        )
+        out_img = np.vstack([title, panel])
 
-    cv_header = _header(
-        f"mode=cv  -  {cv_result.n_walls}W / {cv_result.n_obstacles}O"
-    )
-    auto_header = _header(
-        f"mode=auto  -  {auto_result.n_walls}W / {auto_result.n_obstacles}O"
-    )
-    hybrid_header = _header(
-        f"mode=hybrid  -  {hybrid_result.n_walls}W / {hybrid_result.n_obstacles}O"
-        + (f"  ({hybrid_result.mode} fallback)" if hybrid_result.mode != "hybrid" else "")
-    )
-
-    cv_col = np.vstack([cv_header, cv_panel])
-    auto_col = np.vstack([auto_header, auto_panel])
-    hybrid_col = np.vstack([hybrid_header, hybrid_panel])
-
-    # Thin vertical separator
-    sep = np.full((cv_col.shape[0], 6, 3), (200, 200, 200), dtype=np.uint8)
-    out = np.hstack([cv_col, sep, auto_col, sep, hybrid_col])
-
-    # Top title
-    title_h = 40
-    title = np.full((title_h, out.shape[1], 3), (235, 235, 235), dtype=np.uint8)
-    cv2.putText(
-        title, f"{img_path.name}  -  floor {FLOOR_W_M}x{FLOOR_H_M} m",
-        (16, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (20, 20, 20), 2, cv2.LINE_AA,
-    )
-    out = np.vstack([title, out])
-
-    out_path = img_path.with_name(img_path.stem + "_overlay.png")
-    cv2.imwrite(str(out_path), out)
-    return out_path
+        out_path = img_path.with_name(f"{img_path.stem}_overlay_{mode}.png")
+        cv2.imwrite(str(out_path), out_img)
+        written.append(out_path)
+    return written
 
 
 if __name__ == "__main__":
@@ -132,7 +113,7 @@ if __name__ == "__main__":
     if not pngs:
         sys.exit(f"no PNGs under {IMG_DIR}")
     for p in pngs:
-        out = overlay(p)
-        print(f"  wrote {out.relative_to(IMG_DIR.parent)}")
+        for out in overlay(p):
+            print(f"  wrote {out.relative_to(IMG_DIR.parent)}")
     print("\nopen them with:")
-    print(f"  open {IMG_DIR}/*_overlay.png")
+    print(f"  open {IMG_DIR}/*_overlay_*.png")
