@@ -4,9 +4,18 @@ End-to-end pipeline: **natural language → structured spec → robot selection
 → optimized 2D layout → interactive editing → re-optimization (SA + CP-SAT)
 → 3D animated preview**.
 
-> Bundled blueprints (`render.yaml`, `vercel.json`) deploy a free-tier
-> instance in ~10 minutes — see [Deployment](#deployment-vercel--render)
-> below.
+> 🌐 **Live demo**: <https://robotics-workcell-demo.vercel.app>
+> ⚙️ **Backend API docs**: <https://xyz-robotics-backend.onrender.com/docs>
+> 📦 **Source**: <https://github.com/ChiShengChen/robotics-workcell-optimizer>
+>   · mirror: <https://github.com/RoboDesign-Agent/ROBOX_workcell_demo>
+>
+> ⚠️ Backend runs on Render's free tier and sleeps after 15 minutes of
+> inactivity — the first request after a sleep cold-starts in 30–50 s.
+> Hit `/api/health` once to wake it before showing the UI.
+>
+> Bundled blueprints (`render.yaml`, `vercel.json`) deploy your own
+> free-tier instance in ~10 minutes — see
+> [Deployment](#deployment-vercel--render) below.
 
 ![architecture](docs/architecture.svg)
 
@@ -1094,6 +1103,7 @@ Bundled blueprints for a free-tier deployment:
 2. Wait ~5–10 min for the first build (`pip install -e .` pulls
    ortools / numpy / 3 LLM SDKs).
 3. Hit `https://<your-name>.onrender.com/api/health` → `{"ok":true}`.
+   (Reference instance: <https://xyz-robotics-backend.onrender.com/api/health>.)
 
 Free-tier caveats:
 - Service sleeps after **15 min** of no traffic. First request after a
@@ -1110,6 +1120,8 @@ Free-tier caveats:
    `vercel.json`.
 2. Settings → Environment Variables:
    - `VITE_API_URL` = `https://<your-render-app>.onrender.com/api`
+     (this repo's reference deployment uses
+     `https://xyz-robotics-backend.onrender.com/api`)
    - applies to Production, Preview, Development
 3. Deploy. The frontend at `https://<your-app>.vercel.app` will hit
    the Render backend directly. Backend CORS already allows any
