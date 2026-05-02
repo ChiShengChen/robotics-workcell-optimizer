@@ -1,29 +1,38 @@
 """Floor-plan PNG/JPG → obstacle polygons.
 
-Pipeline (mode='cv', the only one implemented today):
-  1. Decode the image bytes (OpenCV).
-  2. Otsu-threshold to a binary mask: dark = wall / obstacle, light = floor.
-  3. cv2.findContours to extract every dark connected region.
-  4. cv2.minAreaRect on each contour → rotated bounding rect.
-  5. Filter out (a) the outer wall (largest area) when treat_largest_as_boundary
-     is True, (b) noise contours below min_area_mm2.
-  6. Classify the remainder by aspect ratio:
+Two parser modes:
+
+  mode='cv'    : Otsu → findContours → minAreaRect per connected region.
+                 Fast, perfect for vector-style plans where every shape is
+                 already its own connected blob. Fails on touching shapes
+                 (e.g. an X = two crossing bars get merged into ONE rect).
+
+  mode='hough' : Otsu → Canny → HoughLinesP → cluster line segments by
+                 (angle, perpendicular offset) → one rect per cluster.
+                 Recovers individual bars in X-shapes and crossing walls;
+                 better for engineering-drawing-style inputs.
+
+Pipeline shared by both:
+  1. Decode bytes (OpenCV).
+  2. Otsu-threshold to binary: dark = wall / obstacle, light = floor.
+  3. (mode-specific extraction; see the two functions below.)
+  4. Drop the largest detected region as the outer wall outline when
+     treat_largest_as_boundary is True (cell envelope already encodes it).
+  5. Classify by aspect ratio:
        max(w,h) / min(w,h) > WALL_ASPECT  → 'wall'   (long thin rectangle)
        otherwise                          → 'obstacle' (compact)
-  7. Map pixel coords → mm using floor_w_m / floor_h_m supplied by the caller.
-     Pixel-space origin is top-left, y-down → world origin is bottom-left,
-     y-up to match the rest of the codebase (CLAUDE.md convention).
-  8. Emit each rect as a 4-corner closed polygon so the result plugs into the
-     existing /api/cad obstacle pipeline (polygon-vs-rect intersection,
+  6. Map pixel coords → mm using floor_w_m / floor_h_m supplied by the
+     caller. Pixel origin is top-left, y-down → world origin is bottom-
+     left, y-up (matches the rest of the codebase, CLAUDE.md convention).
+  7. Emit each rect as a 4-corner closed polygon so the result plugs into
+     the existing /api/cad obstacle pipeline (polygon-vs-rect intersection,
      SA gradient, CP-SAT constraint) for free.
 
-Hooks left for future:
-  - mode='llm'     : send the cropped thumbnail to a vision LLM and ask it
-                     to label each rectangle (wall / column / equipment / door).
-  - mode='hybrid'  : OpenCV for geometry (precise), LLM for semantic labels.
-
-Both branches raise NotImplementedError today; wiring is in place so the
-endpoint signature won't change when they're added.
+Hook left for future:
+  - mode='hybrid' : OpenCV for geometry, vision LLM for semantic labels
+                    (wall vs column vs equipment vs door). Raises
+                    NotImplementedError today; signature is stable so the
+                    endpoint won't change when it's added.
 """
 
 from __future__ import annotations
@@ -44,7 +53,18 @@ WALL_ASPECT = 8.0          # max(w,h) / min(w,h) above which a rect is a "wall"
 MIN_AREA_MM2 = 50_000.0    # 0.05 m² — drops dust / printed text / scale bars
 EPSILON_DOUGLAS = 0.005    # cv2.approxPolyDP epsilon as fraction of perimeter
 
-ParseMode = Literal["cv", "llm", "hybrid"]
+ParseMode = Literal["cv", "hough", "llm", "hybrid"]
+
+# Hough tuning — works well on the bundled vector PNGs at ~2k px square.
+# Scale-invariant within a factor of 2; tune if you push very different sizes.
+HOUGH_CANNY_LOW = 60
+HOUGH_CANNY_HIGH = 180
+HOUGH_THRESHOLD = 80         # min votes to call a Hough peak a line
+HOUGH_MIN_LINE_PX_FRAC = 0.04  # minLineLength = 4% of image diagonal
+HOUGH_MAX_GAP_PX_FRAC = 0.01   # maxLineGap = 1% of diagonal
+HOUGH_ANGLE_BIN_DEG = 5.0    # cluster lines whose angles differ by < this
+HOUGH_OFFSET_BIN_PX = 25     # ... AND perpendicular offset differ by < this
+HOUGH_MIN_TOTAL_LEN_FRAC = 0.03  # drop clusters shorter than 3% of diagonal
 
 
 @dataclass(frozen=True)
@@ -104,12 +124,14 @@ def parse_image(
         margin_mm: shift world coords so the smallest (x, y) sits at
               (margin_mm, margin_mm), matching the DXF importer.
     """
-    if mode != "cv":
+    if mode in ("llm", "hybrid"):
         raise NotImplementedError(
-            f"image parse mode '{mode}' is reserved; use 'cv'. The 'llm' / "
-            f"'hybrid' branches will route through services.llm to label "
-            f"OpenCV-detected rects with semantic kinds."
+            f"image parse mode '{mode}' is reserved; use 'cv' or 'hough'. "
+            f"The 'hybrid' branch will route OpenCV-detected rects through "
+            f"a vision LLM for semantic labels (wall/column/equipment/door)."
         )
+    if mode not in ("cv", "hough"):
+        raise ValueError(f"unknown mode {mode!r}; expected one of cv/hough/llm/hybrid")
     if floor_w_m <= 0 or floor_h_m <= 0:
         raise ValueError("floor_w_m and floor_h_m must be positive metres.")
 
@@ -120,7 +142,7 @@ def parse_image(
     h_px, w_px = img.shape[:2]
 
     # Otsu — picks the threshold automatically. We then INVERT so dark
-    # walls/obstacles become 255 (foreground for findContours).
+    # walls/obstacles become 255 (foreground for findContours / Hough).
     _, binary = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
     # Light morphological close to bridge 1-2px gaps in dashed lines /
@@ -128,24 +150,15 @@ def parse_image(
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
 
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
     mm_per_px_x = (floor_w_m * 1000.0) / w_px
     mm_per_px_y = (floor_h_m * 1000.0) / h_px
 
-    # Pass 1: rotated bounding rects + areas (still in pixel space).
-    raw: list[tuple[tuple[float, float], tuple[float, float], float, float]] = []
-    for c in contours:
-        rect = cv2.minAreaRect(c)  # ((cx, cy), (w, h), angle)
-        (cx_px, cy_px), (w_rot_px, h_rot_px), angle = rect
-        if w_rot_px <= 0 or h_rot_px <= 0:
-            continue
-        # Convert to mm BEFORE area check so the user-facing threshold is
-        # in mm² regardless of image resolution.
-        w_mm = w_rot_px * mm_per_px_x
-        h_mm = h_rot_px * mm_per_px_y
-        area_mm2 = w_mm * h_mm
-        raw.append(((cx_px, cy_px), (w_mm, h_mm), angle, area_mm2))
+    # Pass 1: pixel-space rects depend on the mode. Both modes hand back
+    # the same shape: list of ((cx_px, cy_px), (w_mm, h_mm), angle_deg, area_mm2).
+    if mode == "cv":
+        raw = _extract_rects_minarea(binary, mm_per_px_x, mm_per_px_y)
+    else:
+        raw = _extract_rects_hough(binary, mm_per_px_x, mm_per_px_y, w_px, h_px)
 
     # Drop the largest (outer wall outline) when requested — same convention
     # as the DXF importer.
@@ -214,6 +227,196 @@ def parse_image(
         n_skipped=n_skipped,
         mode=mode,
     )
+
+
+def _extract_rects_minarea(
+    binary: np.ndarray, mm_per_px_x: float, mm_per_px_y: float,
+) -> list[tuple[tuple[float, float], tuple[float, float], float, float]]:
+    """Original CV mode: one minAreaRect per connected component."""
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    out: list[tuple[tuple[float, float], tuple[float, float], float, float]] = []
+    for c in contours:
+        rect = cv2.minAreaRect(c)
+        (cx_px, cy_px), (w_rot_px, h_rot_px), angle = rect
+        if w_rot_px <= 0 or h_rot_px <= 0:
+            continue
+        w_mm = w_rot_px * mm_per_px_x
+        h_mm = h_rot_px * mm_per_px_y
+        out.append(((cx_px, cy_px), (w_mm, h_mm), angle, w_mm * h_mm))
+    return out
+
+
+def _extract_rects_hough(
+    binary: np.ndarray,
+    mm_per_px_x: float,
+    mm_per_px_y: float,
+    w_px: int,
+    h_px: int,
+) -> list[tuple[tuple[float, float], tuple[float, float], float, float]]:
+    """Hough mode: detect line segments, cluster by (angle, perpendicular
+    offset), emit one oriented rect per cluster.
+
+    Recovers individual bars in X-shapes / crossing walls that the cv mode
+    merges into a single bbox. Falls back to plain edge contours for any
+    *compact* (non-line) shapes — circles, diamonds, triangles — by
+    overlaying their minAreaRects on top, since Hough is line-only.
+    """
+    diag_px = math.hypot(w_px, h_px)
+    min_line_px = max(20, int(HOUGH_MIN_LINE_PX_FRAC * diag_px))
+    max_gap_px = max(4, int(HOUGH_MAX_GAP_PX_FRAC * diag_px))
+
+    # 1) Detect line segments.
+    edges = cv2.Canny(binary, HOUGH_CANNY_LOW, HOUGH_CANNY_HIGH)
+    lines = cv2.HoughLinesP(
+        edges,
+        rho=1,
+        theta=math.pi / 360.0,
+        threshold=HOUGH_THRESHOLD,
+        minLineLength=min_line_px,
+        maxLineGap=max_gap_px,
+    )
+    segments: list[tuple[float, float, float, float, float, float, float]] = []
+    if lines is not None:
+        for ln in lines:
+            x1, y1, x2, y2 = (float(v) for v in ln[0])
+            length = math.hypot(x2 - x1, y2 - y1)
+            if length < min_line_px:
+                continue
+            # angle in [0, 180); use atan2 then mod
+            angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
+            angle %= 180.0
+            mx, my = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+            # Perpendicular offset of the segment from origin in image frame.
+            theta = math.radians(angle)
+            offset = -math.sin(theta) * mx + math.cos(theta) * my
+            segments.append((x1, y1, x2, y2, length, angle, offset))
+
+    # 2) Cluster by (angle, offset). We don't use sklearn — small N, fine
+    # to do an O(n²) union-find by tolerance.
+    n = len(segments)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        a, b = find(i), find(j)
+        if a != b:
+            parent[a] = b
+
+    for i in range(n):
+        _, _, _, _, _, ai, oi = segments[i]
+        for j in range(i + 1, n):
+            _, _, _, _, _, aj, oj = segments[j]
+            d_angle = min(abs(ai - aj), 180.0 - abs(ai - aj))
+            if d_angle > HOUGH_ANGLE_BIN_DEG:
+                continue
+            if abs(oi - oj) > HOUGH_OFFSET_BIN_PX:
+                continue
+            union(i, j)
+
+    clusters: dict[int, list[int]] = {}
+    for i in range(n):
+        clusters.setdefault(find(i), []).append(i)
+
+    # 3) For each cluster, fit one oriented rect.
+    out: list[tuple[tuple[float, float], tuple[float, float], float, float]] = []
+    min_total_len_px = HOUGH_MIN_TOTAL_LEN_FRAC * diag_px
+    consumed_mask = np.zeros_like(binary)
+    for ids in clusters.values():
+        # Mean angle of the cluster (weight by segment length).
+        total_len = sum(segments[i][4] for i in ids)
+        if total_len < min_total_len_px:
+            continue
+        angle_mean = sum(segments[i][5] * segments[i][4] for i in ids) / total_len
+        theta = math.radians(angle_mean)
+        # Project all endpoints onto the line direction + perpendicular,
+        # take min/max → length and thickness.
+        u_dir = np.array([math.cos(theta), math.sin(theta)])
+        v_perp = np.array([-math.sin(theta), math.cos(theta)])
+        pts = np.array(
+            [(segments[i][0], segments[i][1]) for i in ids]
+            + [(segments[i][2], segments[i][3]) for i in ids],
+            dtype=np.float64,
+        )
+        u = pts @ u_dir
+        v = pts @ v_perp
+        u_min, u_max = float(u.min()), float(u.max())
+        v_min, v_max = float(v.min()), float(v.max())
+        # Thickness: clamp to a sane minimum (Hough lines are 1-px wide;
+        # the underlying wall is usually thicker — sample its actual
+        # width by walking ⊥ from the segment midpoint into the binary).
+        thickness_px = max(v_max - v_min, _sample_thickness_px(binary, segments[ids[0]]))
+        length_px = u_max - u_min
+        if length_px <= 0 or thickness_px <= 0:
+            continue
+        cx_uv = ((u_min + u_max) / 2.0, (v_min + v_max) / 2.0)
+        cx_px = cx_uv[0] * u_dir[0] + cx_uv[1] * v_perp[0]
+        cy_px = cx_uv[0] * u_dir[1] + cx_uv[1] * v_perp[1]
+        w_mm = length_px * mm_per_px_x
+        h_mm = thickness_px * mm_per_px_y
+        # Mark this rect's pixels as consumed so the compact-shape fallback
+        # below doesn't double-count walls.
+        box_pts = cv2.boxPoints((
+            (cx_px, cy_px),
+            (length_px, thickness_px),
+            angle_mean,
+        )).astype(np.int32)
+        cv2.fillPoly(consumed_mask, [box_pts], 255)
+        out.append((
+            (cx_px, cy_px),
+            (w_mm, h_mm),
+            angle_mean - 90.0,  # match minAreaRect's convention (angle of shorter edge)
+            w_mm * h_mm,
+        ))
+
+    # 4) Compact shapes (circles, diamonds, triangles) won't show up as
+    # Hough lines. Run findContours on the leftover binary and add their
+    # minAreaRects (filtered to the OBSTACLE class — anything line-like
+    # that survived this filter is unlikely).
+    leftover = cv2.bitwise_and(binary, cv2.bitwise_not(consumed_mask))
+    leftover = cv2.morphologyEx(
+        leftover, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)),
+    )
+    for c in cv2.findContours(leftover, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
+        rect = cv2.minAreaRect(c)
+        (cx_px, cy_px), (w_rot_px, h_rot_px), angle = rect
+        if w_rot_px <= 0 or h_rot_px <= 0:
+            continue
+        w_mm = w_rot_px * mm_per_px_x
+        h_mm = h_rot_px * mm_per_px_y
+        out.append(((cx_px, cy_px), (w_mm, h_mm), angle, w_mm * h_mm))
+
+    return out
+
+
+def _sample_thickness_px(
+    binary: np.ndarray,
+    segment: tuple[float, float, float, float, float, float, float],
+) -> float:
+    """Probe the binary image perpendicular to a segment's midpoint to
+    estimate its actual on-pixel thickness — Hough returns 1-px lines but
+    the underlying walls are usually 5-30 px wide."""
+    x1, y1, x2, y2, _length, angle, _ = segment
+    h_px, w_px = binary.shape[:2]
+    mx, my = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    theta = math.radians(angle)
+    nx, ny = -math.sin(theta), math.cos(theta)
+    # Walk ±max_probe in both directions, count consecutive on pixels.
+    max_probe = 60
+    count = 1
+    for sign in (1, -1):
+        for k in range(1, max_probe):
+            x = int(round(mx + sign * k * nx))
+            y = int(round(my + sign * k * ny))
+            if 0 <= x < w_px and 0 <= y < h_px and binary[y, x] > 0:
+                count += 1
+            else:
+                break
+    return float(count)
 
 
 def _rotated_rect_polygon(

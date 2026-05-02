@@ -89,6 +89,36 @@ def test_unimplemented_modes_raise_clearly():
         assert "reserved" in str(e.value)
 
 
+def test_unknown_mode_raises_value_error():
+    img = _white_image()
+    with pytest.raises(ValueError):
+        parse_image(_encode_png(img), floor_w_m=10.0, floor_h_m=10.0, mode="bogus")  # type: ignore[arg-type]
+
+
+def test_hough_mode_separates_crossing_bars():
+    """Two crossing bars (an X) should come back as TWO walls in hough
+    mode and ONE merged rect in cv mode — that is the whole point of
+    adding the hough path."""
+    img = _white_image(600, 600)
+    # Two diagonal bars 16 px thick, ~280 px long, crossing at center.
+    cv2.line(img, (100, 100), (500, 500), 0, thickness=16)
+    cv2.line(img, (500, 100), (100, 500), 0, thickness=16)
+
+    cv_out = parse_image(
+        _encode_png(img), floor_w_m=10.0, floor_h_m=10.0,
+        mode="cv", treat_largest_as_boundary=False,
+    )
+    hough_out = parse_image(
+        _encode_png(img), floor_w_m=10.0, floor_h_m=10.0,
+        mode="hough", treat_largest_as_boundary=False,
+    )
+    # cv: the X is one connected component → at most one rect.
+    assert len(cv_out.rects) <= 1
+    # hough: at least the two bars (compact-shape leftover may add 0 - 2
+    # tiny pieces from the crossing region).
+    assert hough_out.n_walls >= 2
+
+
 def test_corrupt_image_raises_value_error():
     with pytest.raises(ValueError):
         parse_image(b"not an image", floor_w_m=10.0, floor_h_m=10.0)
