@@ -1,6 +1,13 @@
 """Floor-plan PNG/JPG → obstacle polygons.
 
-Two parser modes:
+Three parser modes:
+
+  mode='auto'  : (DEFAULT) per-contour smart dispatch — solid filled
+                 shapes (circle, diamond, triangle) keep their single
+                 minAreaRect, while sparse / crossed contours (X-shapes,
+                 plus signs, T-intersections) get re-extracted with
+                 Hough line clustering. Combines the strengths of cv +
+                 hough without their respective failure modes.
 
   mode='cv'    : Otsu → findContours → minAreaRect per connected region.
                  Fast, perfect for vector-style plans where every shape is
@@ -9,10 +16,11 @@ Two parser modes:
 
   mode='hough' : Otsu → Canny → HoughLinesP → cluster line segments by
                  (angle, perpendicular offset) → one rect per cluster.
-                 Recovers individual bars in X-shapes and crossing walls;
-                 better for engineering-drawing-style inputs.
+                 Recovers individual bars in X-shapes and crossing walls,
+                 but over-segments closed polygon outlines (a diamond
+                 outline becomes 4 separate walls).
 
-Pipeline shared by both:
+Pipeline shared by all three:
   1. Decode bytes (OpenCV).
   2. Otsu-threshold to binary: dark = wall / obstacle, light = floor.
   3. (mode-specific extraction; see the two functions below.)
@@ -53,7 +61,14 @@ WALL_ASPECT = 8.0          # max(w,h) / min(w,h) above which a rect is a "wall"
 MIN_AREA_MM2 = 50_000.0    # 0.05 m² — drops dust / printed text / scale bars
 EPSILON_DOUGLAS = 0.005    # cv2.approxPolyDP epsilon as fraction of perimeter
 
-ParseMode = Literal["cv", "hough", "llm", "hybrid"]
+ParseMode = Literal["auto", "cv", "hough", "llm", "hybrid"]
+
+# 'auto' mode tuning: per-contour solidity = contourArea / minAreaRect_area.
+# Solid filled shapes (rect / circle / diamond / triangle) sit > ~0.7;
+# sparse line-art (X / + / single bar / T) sits < ~0.4. Between we default
+# to the cv path so we don't over-segment ambiguous blobs.
+AUTO_SOLIDITY_FILLED = 0.62  # >= this → keep as a single minAreaRect
+AUTO_SOLIDITY_SPARSE = 0.38  # <= this → recurse into Hough on this contour
 
 # Hough tuning — works well on the bundled vector PNGs at ~2k px square.
 # Scale-invariant within a factor of 2; tune if you push very different sizes.
@@ -101,7 +116,7 @@ def parse_image(
     floor_w_m: float,
     floor_h_m: float,
     *,
-    mode: ParseMode = "cv",
+    mode: ParseMode = "auto",
     treat_largest_as_boundary: bool = True,
     min_area_mm2: float = MIN_AREA_MM2,
     wall_aspect: float = WALL_ASPECT,
@@ -126,12 +141,15 @@ def parse_image(
     """
     if mode in ("llm", "hybrid"):
         raise NotImplementedError(
-            f"image parse mode '{mode}' is reserved; use 'cv' or 'hough'. "
-            f"The 'hybrid' branch will route OpenCV-detected rects through "
-            f"a vision LLM for semantic labels (wall/column/equipment/door)."
+            f"image parse mode '{mode}' is reserved; use 'auto', 'cv' or "
+            f"'hough'. The 'hybrid' branch will route OpenCV-detected "
+            f"rects through a vision LLM for semantic labels "
+            f"(wall/column/equipment/door)."
         )
-    if mode not in ("cv", "hough"):
-        raise ValueError(f"unknown mode {mode!r}; expected one of cv/hough/llm/hybrid")
+    if mode not in ("auto", "cv", "hough"):
+        raise ValueError(
+            f"unknown mode {mode!r}; expected one of auto/cv/hough/llm/hybrid"
+        )
     if floor_w_m <= 0 or floor_h_m <= 0:
         raise ValueError("floor_w_m and floor_h_m must be positive metres.")
 
@@ -157,8 +175,10 @@ def parse_image(
     # the same shape: list of ((cx_px, cy_px), (w_mm, h_mm), angle_deg, area_mm2).
     if mode == "cv":
         raw = _extract_rects_minarea(binary, mm_per_px_x, mm_per_px_y)
-    else:
+    elif mode == "hough":
         raw = _extract_rects_hough(binary, mm_per_px_x, mm_per_px_y, w_px, h_px)
+    else:  # 'auto'
+        raw = _extract_rects_auto(binary, mm_per_px_x, mm_per_px_y, w_px, h_px)
 
     # Drop the largest (outer wall outline) when requested — same convention
     # as the DXF importer.
@@ -390,6 +410,60 @@ def _extract_rects_hough(
         h_mm = h_rot_px * mm_per_px_y
         out.append(((cx_px, cy_px), (w_mm, h_mm), angle, w_mm * h_mm))
 
+    return out
+
+
+def _extract_rects_auto(
+    binary: np.ndarray,
+    mm_per_px_x: float,
+    mm_per_px_y: float,
+    w_px: int,
+    h_px: int,
+) -> list[tuple[tuple[float, float], tuple[float, float], float, float]]:
+    """Per-contour smart dispatch: solid filled shapes keep one minAreaRect,
+    sparse / crossed contours get re-extracted with Hough. Avoids
+    over-segmenting closed polygon outlines (the failure mode of pure
+    'hough' mode) while still splitting X-shapes (the failure mode of
+    pure 'cv' mode)."""
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    out: list[tuple[tuple[float, float], tuple[float, float], float, float]] = []
+    for c in contours:
+        rect = cv2.minAreaRect(c)
+        (cx_px, cy_px), (w_rot_px, h_rot_px), angle = rect
+        if w_rot_px <= 0 or h_rot_px <= 0:
+            continue
+        bbox_area = w_rot_px * h_rot_px
+        contour_area = cv2.contourArea(c)
+        solidity = contour_area / bbox_area if bbox_area > 0 else 0.0
+
+        if solidity >= AUTO_SOLIDITY_FILLED:
+            # Filled / nearly-rectangular shape (rect, circle, diamond,
+            # triangle, single thick bar): keep as one rect.
+            w_mm = w_rot_px * mm_per_px_x
+            h_mm = h_rot_px * mm_per_px_y
+            out.append(((cx_px, cy_px), (w_mm, h_mm), angle, w_mm * h_mm))
+        elif solidity <= AUTO_SOLIDITY_SPARSE:
+            # Sparse / crossed (X-shape, plus-sign, T-junction): re-run
+            # Hough on JUST this contour's pixels.
+            mask = np.zeros_like(binary)
+            cv2.drawContours(mask, [c], -1, 255, thickness=cv2.FILLED)
+            contour_only = cv2.bitwise_and(binary, mask)
+            sub = _extract_rects_hough(contour_only, mm_per_px_x, mm_per_px_y, w_px, h_px)
+            if sub:
+                out.extend(sub)
+            else:
+                # Hough found nothing — keep the original bbox so we don't
+                # silently lose the contour.
+                w_mm = w_rot_px * mm_per_px_x
+                h_mm = h_rot_px * mm_per_px_y
+                out.append(((cx_px, cy_px), (w_mm, h_mm), angle, w_mm * h_mm))
+        else:
+            # Ambiguous (~0.4 - 0.6): default to cv path. Includes most
+            # L/U-shapes and partially-filled rects where Hough would
+            # over-segment but cv keeps it as one obstacle.
+            w_mm = w_rot_px * mm_per_px_x
+            h_mm = h_rot_px * mm_per_px_y
+            out.append(((cx_px, cy_px), (w_mm, h_mm), angle, w_mm * h_mm))
     return out
 
 

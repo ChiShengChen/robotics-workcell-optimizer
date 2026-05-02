@@ -76,9 +76,11 @@ def overlay(img_path: Path) -> Path:
 
     cv_result = parse_image(raw, FLOOR_W_M, FLOOR_H_M, mode="cv")
     hough_result = parse_image(raw, FLOOR_W_M, FLOOR_H_M, mode="hough")
+    auto_result = parse_image(raw, FLOOR_W_M, FLOOR_H_M, mode="auto")
 
     cv_panel = _draw_overlay(base.copy(), cv_result)
     hough_panel = _draw_overlay(base.copy(), hough_result)
+    auto_panel = _draw_overlay(base.copy(), auto_result)
 
     h_px, w_px, _ = cv_panel.shape
     header_h = 56
@@ -92,18 +94,22 @@ def overlay(img_path: Path) -> Path:
         return h
 
     cv_header = _header(
-        f"mode=cv (minAreaRect)  -  {cv_result.n_walls}W / {cv_result.n_obstacles}O / {cv_result.n_skipped} skipped"
+        f"mode=cv (minAreaRect)  -  {cv_result.n_walls}W / {cv_result.n_obstacles}O"
     )
     hough_header = _header(
-        f"mode=hough (HoughLinesP + cluster)  -  {hough_result.n_walls}W / {hough_result.n_obstacles}O / {hough_result.n_skipped} skipped"
+        f"mode=hough (HoughLinesP)  -  {hough_result.n_walls}W / {hough_result.n_obstacles}O"
+    )
+    auto_header = _header(
+        f"mode=auto (per-contour)  -  {auto_result.n_walls}W / {auto_result.n_obstacles}O"
     )
 
     cv_col = np.vstack([cv_header, cv_panel])
     hough_col = np.vstack([hough_header, hough_panel])
+    auto_col = np.vstack([auto_header, auto_panel])
 
     # Thin vertical separator
     sep = np.full((cv_col.shape[0], 6, 3), (200, 200, 200), dtype=np.uint8)
-    out = np.hstack([cv_col, sep, hough_col])
+    out = np.hstack([cv_col, sep, hough_col, sep, auto_col])
 
     # Top title
     title_h = 40

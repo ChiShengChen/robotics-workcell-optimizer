@@ -95,6 +95,31 @@ def test_unknown_mode_raises_value_error():
         parse_image(_encode_png(img), floor_w_m=10.0, floor_h_m=10.0, mode="bogus")  # type: ignore[arg-type]
 
 
+def test_auto_mode_keeps_solid_obstacle_and_splits_crossing_bars():
+    """Auto mode = best of both: a solid square stays one obstacle AND a
+    nearby X gets split into two walls (the failure modes of cv and hough
+    respectively)."""
+    img = _white_image(800, 400)
+    # Solid 60x60 square on the left.
+    cv2.rectangle(img, (60, 170), (120, 230), 0, thickness=-1)
+    # Two crossing bars (X) on the right.
+    cv2.line(img, (450, 100), (750, 300), 0, thickness=18)
+    cv2.line(img, (750, 100), (450, 300), 0, thickness=18)
+
+    out = parse_image(
+        _encode_png(img), floor_w_m=20.0, floor_h_m=10.0,
+        mode="auto", treat_largest_as_boundary=False,
+    )
+    # The square should land exactly once.
+    obstacles_near_square = [
+        r for r in out.rects if r.kind == "obstacle" and 800 < r.cx_mm < 4000
+    ]
+    assert len(obstacles_near_square) == 1
+    # The X should give at least 2 walls (its two bars).
+    walls_in_x_region = [r for r in out.rects if r.kind == "wall" and r.cx_mm > 8000]
+    assert len(walls_in_x_region) >= 2
+
+
 def test_hough_mode_separates_crossing_bars():
     """Two crossing bars (an X) should come back as TWO walls in hough
     mode and ONE merged rect in cv mode — that is the whole point of

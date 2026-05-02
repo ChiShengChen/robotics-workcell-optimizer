@@ -156,7 +156,10 @@ async def import_image(
     file: UploadFile = File(..., description="Top-down floor plan PNG / JPG."),
     floor_w_m: float = Form(..., description="Real-world width of the image in metres."),
     floor_h_m: float = Form(..., description="Real-world height of the image in metres."),
-    mode: str = Form("cv", description="Parser mode: 'cv' | 'hough' (today). 'llm' / 'hybrid' reserved."),
+    mode: str = Form(
+        "auto",
+        description="Parser mode: 'auto' (default — per-contour smart dispatch), 'cv', 'hough'. 'llm' / 'hybrid' reserved.",
+    ),
     margin_mm: float = Form(200.0, description="Origin shift so smallest (x,y) lands at (margin_mm, margin_mm)."),
 ) -> CadImportResponse:
     """Detect walls + obstacles in a top-down floor plan image.
@@ -184,10 +187,10 @@ async def import_image(
             status_code=400,
             detail="floor_w_m and floor_h_m must be positive metres.",
         )
-    if mode not in ("cv", "hough", "llm", "hybrid"):
+    if mode not in ("auto", "cv", "hough", "llm", "hybrid"):
         raise HTTPException(
             status_code=400,
-            detail=f"mode must be one of cv/hough/llm/hybrid, got {mode!r}.",
+            detail=f"mode must be one of auto/cv/hough/llm/hybrid, got {mode!r}.",
         )
     raw = await file.read()
     if not raw:
