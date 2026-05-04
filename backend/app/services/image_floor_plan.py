@@ -72,7 +72,7 @@ logger = logging.getLogger(__name__)
 
 # Gemini Vision config for hybrid mode.
 HYBRID_GEMINI_MODEL = "gemini-2.5-flash"
-HYBRID_MAX_OUTPUT_TOKENS = 4096
+HYBRID_MAX_OUTPUT_TOKENS = 16384
 
 # Tuning constants — see module docstring for what each one controls.
 WALL_ASPECT = 8.0          # max(w,h) / min(w,h) above which a rect is a "wall"
@@ -214,12 +214,54 @@ def parse_image(
     # as the DXF importer.
     # treat_largest_as_boundary applies only to pure-CV modes — the LLM
     # is told to skip the outer frame itself.
+    #
+    # We only drop the largest contour if its bbox covers most of the image
+    # AND it's a SOLID filled blob — the classic "outer wall as one filled
+    # rect" case. We do NOT drop it when it's a thin outline (e.g. four
+    # perimeter wall segments that look like one big sparse contour to
+    # findContours after morph-close bridges the corners), because that
+    # outline IS made of real walls the layout needs to honour.
     if treat_largest_as_boundary and raw and mode != "hybrid":
         idx_largest = max(range(len(raw)), key=lambda i: raw[i][3])
-        boundary_drop = raw.pop(idx_largest)
-        logger.info(
-            "Dropped largest contour (boundary): area=%.1f mm²", boundary_drop[3]
+        cx_px, cy_px = raw[idx_largest][0]
+        w_mm, h_mm = raw[idx_largest][1]
+        # bbox-area in pixels² for solidity check.
+        w_px_box = w_mm / mm_per_px_x
+        h_px_box = h_mm / mm_per_px_y
+        bbox_area_px = w_px_box * h_px_box
+        # Re-find the contour to compute its filled area (we don't carry
+        # the contour through the tuple). Cheap: same binary, RETR_EXTERNAL.
+        contours, _ = cv2.findContours(
+            binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE,
         )
+        # Match by centroid proximity — minAreaRect centers are stable.
+        best_c, best_d = None, math.inf
+        for c in contours:
+            M = cv2.moments(c)
+            if M["m00"] == 0:
+                continue
+            ccx = M["m10"] / M["m00"]
+            ccy = M["m01"] / M["m00"]
+            d = math.hypot(ccx - cx_px, ccy - cy_px)
+            if d < best_d:
+                best_d, best_c = d, c
+        contour_area_px = cv2.contourArea(best_c) if best_c is not None else 0
+        solidity = contour_area_px / bbox_area_px if bbox_area_px > 0 else 0.0
+        # Bbox covers >= 90% of image AND it's a solid blob (>=0.5 fill)?
+        covers_image = (
+            w_px_box >= 0.9 * w_px and h_px_box >= 0.9 * h_px
+        )
+        if solidity >= 0.5 and covers_image:
+            boundary_drop = raw.pop(idx_largest)
+            logger.info(
+                "Dropped largest contour (solid boundary): area=%.1f mm² solidity=%.2f",
+                boundary_drop[3], solidity,
+            )
+        else:
+            logger.info(
+                "Kept largest contour (sparse outline): area=%.1f mm² solidity=%.2f",
+                raw[idx_largest][3], solidity,
+            )
 
     rects: list[FloorPlanRect] = []
     n_skipped = 0
@@ -506,21 +548,25 @@ def _extract_rects_hybrid(
         f"OpenCV detected the following candidate rectangles (pixel space):\n"
         f"{json.dumps(candidates, indent=2)}\n\n"
         "Your job: produce the FINAL list of rectangles. Be aggressive about "
-        "fixing OpenCV's mistakes. For each output rectangle, return:\n"
+        "fixing OpenCV's mistakes — OpenCV often merges several walls into "
+        "one big sparse contour, which you should split. For each output "
+        "rectangle, return:\n"
         '  {"cx_px": float, "cy_px": float, "w_px": float, "h_px": float, '
         '"angle_deg": float, "kind": "wall" | "obstacle", "label": "<short>"}\n\n'
         "Rules:\n"
-        "- 'wall' = thin / long structure. INCLUDES each individual bar of "
-        "an X / + / T / cross — split them into separate walls.\n"
+        "- 'wall' = thin / long structure. INCLUDES (a) each individual bar "
+        "of an X / + / T / cross, AND (b) each side of the room's outer "
+        "perimeter. If OpenCV gave you ONE giant rect that encloses the "
+        "whole image and is hollow, that's the outer-wall outline — REPLACE "
+        "it with 4 individual wall rectangles, one per visible side "
+        "(top / bottom / left / right). Each side may itself be broken into "
+        "multiple segments if you can see gaps; emit one wall per segment.\n"
         "- 'obstacle' = compact filled or outline shape (column, equipment, "
-        "pallet, machine). KEEP an outline diamond / triangle / circle as "
-        "ONE obstacle, do not split into edges.\n"
-        "- DROP the outermost frame contour (it represents the cell envelope, "
-        "not a wall). Drop text labels, dimension annotations, scale bars.\n"
+        "pallet, machine, circle, triangle, filled square). KEEP each as "
+        "ONE obstacle — do NOT split a polygon outline into its edges.\n"
+        "- Drop text labels, dimension annotations, scale bars, hatching.\n"
         "- If OpenCV merged an X-shape into a single tilted bbox, REPLACE it "
         "with two correctly-oriented thin walls along the actual bars.\n"
-        "- If OpenCV gave a single rect for an outline shape (diamond / "
-        "triangle), KEEP it as one obstacle.\n"
         "- You may add rectangles OpenCV missed and skip ones it hallucinated.\n"
         "Return ONLY a JSON array of objects (no prose, no markdown). Empty "
         "array is allowed if the image has nothing meaningful."
@@ -681,8 +727,15 @@ def _sample_thickness_px(
 def _rotated_rect_polygon(
     cx_mm: float, cy_mm: float, w_mm: float, h_mm: float, angle_deg: float,
 ) -> list[list[float]]:
-    """4-corner closed polygon for a rotated rect, world coords (mm)."""
-    angle = math.radians(angle_deg)
+    """4-corner closed polygon for a rotated rect, world coords (mm).
+
+    The angle came from cv2.minAreaRect, which works in PIXEL space
+    (y-down). Our world frame is y-up (CLAUDE.md convention), so a
+    rotation that swept clockwise in the image becomes counter-clockwise
+    in world coords. Negate the angle to compensate — without this, every
+    rotated rect was drawn mirrored about its short axis.
+    """
+    angle = math.radians(-angle_deg)
     cos_a = math.cos(angle)
     sin_a = math.sin(angle)
     hw = w_mm / 2.0
