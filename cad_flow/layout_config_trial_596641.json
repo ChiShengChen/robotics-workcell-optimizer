@@ -1,0 +1,53 @@
+{
+  "robot_id": "KUKA_KR_30_R2100",
+  "robot_position_xy": [
+    1.0014,
+    0.0
+  ],
+  "robot_yaw_deg": 180.0,
+  "pedestal_height_m": 0.492,
+  "conveyor_end_xy_m": [
+    0.0,
+    0.0
+  ],
+  "conveyor_height_m": 0.3,
+  "conveyor_collision": {
+    "center": [
+      -1.35,
+      0.0,
+      0.15
+    ],
+    "dimensions": [
+      3.0,
+      0.6,
+      0.3
+    ]
+  },
+  "pallet_position": [
+    0.5014,
+    -0.9,
+    0.144
+  ],
+  "pallet_yaw_deg": 0.0,
+  "pallet_size_mm": [
+    1200,
+    800,
+    144
+  ],
+  "box_size_mm": [
+    300.0,
+    400.0,
+    225.0
+  ],
+  "box_weight_kg": 11.5,
+  "stack_layers": 6,
+  "stack_rows": 4,
+  "stack_columns": 2,
+  "gripper": {
+    "collision_size_m": [
+      0.3,
+      0.18,
+      0.105
+    ]
+  }
+}

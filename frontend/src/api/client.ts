@@ -136,6 +136,29 @@ export const api = {
     return (await resp.json()) as CadImportResponse
   },
 
+  exportProposal: async (
+    proposal: LayoutProposal,
+    format: 'dxf' | 'stl' | 'step' | 'bom_csv' | 'bom_md',
+    signal?: AbortSignal,
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const resp = await fetch(`${BASE_URL}/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ proposal, format }),
+      signal,
+    })
+    if (!resp.ok) {
+      let detail: unknown = await resp.text()
+      try { detail = JSON.parse(detail as string) } catch { /* keep raw */ }
+      throw new ApiError(resp.status, detail)
+    }
+    // Filename from Content-Disposition; fall back to a generated name.
+    const cd = resp.headers.get('Content-Disposition') ?? ''
+    const m = /filename="?([^";]+)"?/i.exec(cd)
+    const filename = m?.[1] ?? `${proposal.proposal_id}.${format.replace('bom_', '')}`
+    return { blob: await resp.blob(), filename }
+  },
+
   importImage: async (
     file: File,
     opts: { floor_w_m: number; floor_h_m: number; mode?: 'cv' | 'llm' | 'hybrid'; margin_mm?: number },

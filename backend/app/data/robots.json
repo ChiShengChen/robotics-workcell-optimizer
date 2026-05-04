@@ -196,6 +196,25 @@
       "notes": "Compact 6-axis for mixed case palletizing and random sequence infeed."
     },
     {
+      "model": "KR 30 R2100",
+      "manufacturer": "KUKA",
+      "axes": 6,
+      "payload_kg": 30,
+      "reach_mm": 2101,
+      "vertical_reach_mm_min": -1115,
+      "vertical_reach_mm_max": 2426,
+      "repeatability_mm": 0.04,
+      "footprint_l_mm": 312,
+      "footprint_w_mm": 312,
+      "weight_kg": 555,
+      "cycles_per_hour_std": 1800,
+      "price_usd_low": 38000,
+      "price_usd_high": 55000,
+      "ideal_use_case": "light_case",
+      "manufacturer_url": "https://www.kuka.com/en-us/products/robotics-systems/industrial-robots/kr-cybertech",
+      "notes": "6-axis CYBERTECH-class arm; light case palletizing and mixed SKU at low payload."
+    },
+    {
       "model": "KR 240 R3200 PA",
       "manufacturer": "KUKA",
       "axes": 5,

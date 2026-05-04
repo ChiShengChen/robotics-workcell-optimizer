@@ -9,6 +9,7 @@ import { useLayoutStore } from '@/store/layoutStore'
 import { CompareSheet } from './CompareSheet'
 import { SideBySideCompare } from './SideBySideCompare'
 import { BomDialog } from '@/components/panels/BomDialog'
+import { ExportMenu } from '@/components/panels/ExportMenu'
 
 const THUMB_W = 200
 const THUMB_H = 130
@@ -30,6 +31,7 @@ export function VariantsStrip() {
         </span>
         <div className="flex items-center gap-2">
           <BomDialog />
+          <ExportMenu />
           <SideBySideCompare />
           <CompareSheet />
         </div>

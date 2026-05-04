@@ -25,3 +25,10 @@ venv/
 
 # Logs
 backend/logs/
+
+# CAD/BOM generated artefacts (regenerate via cad_flow/export_cad.py + bom.py)
+cad_flow/*.dxf
+cad_flow/*.stl
+cad_flow/*.step
+cad_flow/*_bom.csv
+cad_flow/*_bom.md
