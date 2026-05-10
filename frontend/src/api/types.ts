@@ -295,3 +295,28 @@ export interface CPSATOptimizeResponse {
   delta_summary: Record<string, number>
   solver_stats: CPSATSolverStats
 }
+
+// ---- NSGA-II (multi-objective Pareto) -------------------------------------
+
+export interface NSGARequest {
+  proposal: LayoutProposal
+  spec: WorkcellSpec
+  robot_model_id?: string | null
+  population_size?: number
+  n_generations?: number
+  seed?: number | null
+}
+
+export interface NSGAResponse {
+  pareto_proposals: LayoutProposal[]
+  pareto_scores: ScoreBreakdown[]
+  seed_proposal: LayoutProposal
+  seed_score: ScoreBreakdown
+  objectives: string[]
+  n_evaluations: number
+  n_generations: number
+  n_pareto: number
+  n_feasible: number
+  walltime_s: number
+  history: Array<Record<string, number>>
+}

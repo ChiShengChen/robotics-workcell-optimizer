@@ -9,6 +9,7 @@ import type {
   CPSATOptimizeResponse,
   ExampleSpec,
   LayoutProposal,
+  NSGAResponse,
   OptimizeResponse,
   ScoreBreakdown,
   WorkcellSpec,
@@ -53,6 +54,8 @@ interface LayoutState {
   lastOptimization: OptimizeResponse | null
   lastCPSAT: CPSATOptimizeResponse | null
   isCPSATRunning: boolean
+  isNSGARunning: boolean
+  lastNSGA: NSGAResponse | null
   nVariants: number
 
   setPrompt: (s: string) => void
@@ -70,6 +73,7 @@ interface LayoutState {
   rescoreActive: () => Promise<void>
   runOptimizeSA: (maxIterations?: number) => Promise<void>
   runOptimizeCPSAT: (timeLimitS?: number) => Promise<void>
+  runOptimizeNSGA: (opts?: { populationSize?: number; nGenerations?: number }) => Promise<void>
   cancelOptimize: () => void
   loadExample: (example: ExampleSpec) => Promise<void>
   importCadFloorPlan: (file: File, opts?: { scale_to_mm?: number; margin_mm?: number }) => Promise<void>
@@ -221,6 +225,8 @@ export const useLayoutStore = create<LayoutState>()(
       lastOptimization: null,
       lastCPSAT: null,
       isCPSATRunning: false,
+      lastNSGA: null,
+      isNSGARunning: false,
       nVariants: 3,
 
       setPrompt: (s) => set({ prompt: s }),
@@ -483,6 +489,55 @@ export const useLayoutStore = create<LayoutState>()(
         }
       },
 
+      runOptimizeNSGA: async (opts = {}) => {
+        const state = get()
+        const spec = state.spec
+        const activeId = state.activeProposalId
+        if (!spec || !activeId) return
+        const seed = state.proposals.find((p) => p.proposal_id === activeId)
+        if (!seed) return
+        if (optimizeAbortController) optimizeAbortController.abort()
+        if (scoreDebounceTimer) clearTimeout(scoreDebounceTimer)
+        if (scoreAbortController) scoreAbortController.abort()
+        set({ isNSGARunning: true, errors: [] })
+        try {
+          const r = await api.optimizeNSGA({
+            proposal: seed,
+            spec,
+            robot_model_id: seed.robot_model_id,
+            population_size: opts.populationSize ?? 32,
+            n_generations: opts.nGenerations ?? 30,
+          })
+          // Append the Pareto front to the proposals list and index their
+          // scores so the existing ParetoScatter / variants strip light up
+          // without further wiring. Switch active to the highest-aggregate
+          // entry — if NSGA-II found nothing better, the user keeps the seed.
+          set((s) => {
+            const newScores = { ...s.scoreByProposal }
+            r.pareto_proposals.forEach((p, i) => {
+              newScores[p.proposal_id] = r.pareto_scores[i]
+            })
+            const ranked = r.pareto_proposals
+              .map((p, i) => ({ p, agg: r.pareto_scores[i].aggregate }))
+              .sort((a, b) => b.agg - a.agg)
+            const bestId = ranked[0]?.p.proposal_id ?? activeId
+            return {
+              proposals: [...s.proposals, ...r.pareto_proposals],
+              scoreByProposal: newScores,
+              lastNSGA: r,
+              isNSGARunning: false,
+              activeProposalId: bestId,
+              scoreHistory: [
+                ...s.scoreHistory,
+                ranked[0]?.agg ?? r.seed_score.aggregate,
+              ].slice(-SCORE_HISTORY_MAX),
+            }
+          })
+        } catch (err) {
+          set({ errors: [describeError(err)], isNSGARunning: false })
+        }
+      },
+
       cancelOptimize: () => {
         if (optimizeAbortController) {
           optimizeAbortController.abort()
@@ -604,8 +659,10 @@ export const useLayoutStore = create<LayoutState>()(
           optimizationProgress: null,
           lastOptimization: null,
           lastCPSAT: null,
+          lastNSGA: null,
           isOptimizing: false,
           isCPSATRunning: false,
+          isNSGARunning: false,
         })
       },
     }),

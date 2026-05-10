@@ -5,6 +5,8 @@ import type {
   CadSample,
   CPSATOptimizeRequest,
   CPSATOptimizeResponse,
+  NSGARequest,
+  NSGAResponse,
   ExampleSpec,
   ExtractRequest,
   GenerateLayoutRequest,
@@ -94,6 +96,13 @@ export const api = {
 
   optimizeCPSAT: (req: CPSATOptimizeRequest, signal?: AbortSignal) =>
     request<CPSATOptimizeResponse>('/optimize/cpsat', {
+      method: 'POST',
+      body: JSON.stringify(req),
+      signal,
+    }),
+
+  optimizeNSGA: (req: NSGARequest, signal?: AbortSignal) =>
+    request<NSGAResponse>('/optimize/nsga', {
       method: 'POST',
       body: JSON.stringify(req),
       signal,

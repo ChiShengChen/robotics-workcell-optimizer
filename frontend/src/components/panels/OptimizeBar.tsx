@@ -4,7 +4,7 @@
 // Bottom: "Compare SA vs CP-SAT" dialog showing both runs side by side.
 
 import { useState } from 'react'
-import { GitCompareArrows, Loader2, Rocket, StopCircle, TrendingUp, Zap } from 'lucide-react'
+import { GitCompareArrows, Loader2, Rocket, Sparkles, StopCircle, TrendingUp, Zap } from 'lucide-react'
 import { Line, LineChart, ResponsiveContainer, YAxis } from 'recharts'
 
 import { Badge } from '@/components/ui/badge'
@@ -33,11 +33,14 @@ const SUB_KEYS: { key: string; label: string }[] = [
 export function OptimizeBar() {
   const isOptimizing = useLayoutStore((s) => s.isOptimizing)
   const isCPSATRunning = useLayoutStore((s) => s.isCPSATRunning)
+  const isNSGARunning = useLayoutStore((s) => s.isNSGARunning)
   const progress = useLayoutStore((s) => s.optimizationProgress)
   const lastOpt = useLayoutStore((s) => s.lastOptimization)
   const lastCPSAT = useLayoutStore((s) => s.lastCPSAT)
+  const lastNSGA = useLayoutStore((s) => s.lastNSGA)
   const runSA = useLayoutStore((s) => s.runOptimizeSA)
   const runCPSAT = useLayoutStore((s) => s.runOptimizeCPSAT)
+  const runNSGA = useLayoutStore((s) => s.runOptimizeNSGA)
   const cancelOptimize = useLayoutStore((s) => s.cancelOptimize)
   const proposals = useLayoutStore((s) => s.proposals)
   const activeId = useLayoutStore((s) => s.activeProposalId)
@@ -53,6 +56,9 @@ export function OptimizeBar() {
           </TabsTrigger>
           <TabsTrigger value="cpsat" className="h-6 text-[11px]">
             <Rocket className="mr-1 h-3 w-3" /> CP-SAT
+          </TabsTrigger>
+          <TabsTrigger value="nsga" className="h-6 text-[11px]">
+            <Sparkles className="mr-1 h-3 w-3" /> NSGA
           </TabsTrigger>
         </TabsList>
 
@@ -141,6 +147,30 @@ export function OptimizeBar() {
             />
           )}
         </TabsContent>
+
+        <TabsContent value="nsga" className="mt-2 space-y-2">
+          <Button
+            size="sm"
+            className="w-full"
+            onClick={() => void runNSGA({ populationSize: 32, nGenerations: 30 })}
+            disabled={!hasActive || isNSGARunning}
+          >
+            {isNSGARunning ? (
+              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="mr-1 h-3.5 w-3.5" />
+            )}
+            Pareto front (NSGA-II)
+          </Button>
+
+          <p className="text-[10px] leading-tight text-slate-500">
+            Multi-objective: compactness × reach × throughput. Pareto-optimal
+            layouts get appended to the variants strip; the highest-aggregate
+            entry becomes active. Watch the Pareto chart fill in.
+          </p>
+
+          {lastNSGA && <NSGAStatsCard r={lastNSGA} />}
+        </TabsContent>
       </Tabs>
 
       <CompareDialog />
@@ -171,6 +201,44 @@ function SolverStatsCard({ stats }: { stats: NonNullable<ReturnType<typeof useLa
     </div>
   )
 }
+
+function NSGAStatsCard({
+  r,
+}: {
+  r: NonNullable<ReturnType<typeof useLayoutStore.getState>['lastNSGA']>
+}) {
+  const seedAgg = r.seed_score.aggregate
+  const bestAgg = r.pareto_scores.length
+    ? Math.max(...r.pareto_scores.map((s) => s.aggregate))
+    : seedAgg
+  const delta = bestAgg - seedAgg
+  const deltaCls = delta > 0.001 ? 'text-emerald-600' : delta < -0.001 ? 'text-red-600' : 'text-slate-500'
+  return (
+    <div className="rounded border border-amber-200 bg-amber-50 p-2 text-[11px]">
+      <div className="mb-1 flex items-center justify-between">
+        <span className="font-medium text-amber-700">NSGA-II Pareto front</span>
+        <Badge variant="secondary" className="h-4 px-1.5 text-[9px]">
+          {r.walltime_s.toFixed(2)}s
+        </Badge>
+      </div>
+      <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
+        <span className="text-slate-500">Pareto / feasible</span>
+        <span className="font-medium tabular-nums">
+          {r.n_pareto} <span className="text-slate-400">/ {r.n_feasible}</span>
+        </span>
+        <span className="text-slate-500">Evaluations</span>
+        <span className="font-medium tabular-nums">{r.n_evaluations.toLocaleString()}</span>
+        <span className="text-slate-500">Generations</span>
+        <span className="font-medium tabular-nums">{r.n_generations}</span>
+        <span className="text-slate-500">Best agg vs seed</span>
+        <span className={`font-medium tabular-nums ${deltaCls}`}>
+          {bestAgg.toFixed(3)} ({delta >= 0 ? '+' : ''}{delta.toFixed(3)})
+        </span>
+      </div>
+    </div>
+  )
+}
+
 
 function DeltaSummary({
   kind,

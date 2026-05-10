@@ -17,6 +17,7 @@ from app.schemas.layout import LayoutProposal, ScoreBreakdown
 from app.schemas.workcell import WorkcellSpec
 from app.services.catalog import get_catalog
 from app.services.optimizer import CPSATRefiner, SAOptimizer, delta_summary
+from app.services.optimizer_nsga import NSGAIIOptimizer
 from app.services.scoring import score_layout
 
 router = APIRouter(prefix="/optimize", tags=["optimize"])
@@ -217,4 +218,80 @@ async def optimize_stream(req: OptimizeRequest) -> StreamingResponse:
         gen(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# NSGA-II — multi-objective Pareto front
+# ---------------------------------------------------------------------------
+
+
+class NSGARequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proposal: LayoutProposal = Field(description="Seed layout to seed the population.")
+    spec: WorkcellSpec = Field(description="Source workcell spec.")
+    robot_model_id: str | None = Field(default=None, description="Override robot id.")
+    population_size: int = Field(default=32, ge=8, le=128)
+    n_generations: int = Field(default=30, ge=5, le=200)
+    seed: int | None = Field(default=None, description="RNG seed for reproducibility.")
+
+
+class NSGAResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pareto_proposals: list[LayoutProposal] = Field(
+        description="Non-dominated layouts across (compactness, reach_margin, throughput)."
+    )
+    pareto_scores: list[ScoreBreakdown] = Field(
+        description="Score breakdown for each Pareto-optimal proposal (same order)."
+    )
+    seed_proposal: LayoutProposal
+    seed_score: ScoreBreakdown
+    objectives: list[str] = Field(
+        description="Names of the 3 minimised objectives (1 - compactness etc.)."
+    )
+    n_evaluations: int
+    n_generations: int
+    n_pareto: int
+    n_feasible: int = Field(
+        description="How many Pareto entries have NO hard violations.",
+    )
+    walltime_s: float
+    history: list[dict[str, float]] = Field(
+        default_factory=list,
+        description="Per-generation min/avg of each objective for a convergence chart.",
+    )
+
+
+@router.post("/nsga", response_model=NSGAResponse)
+async def optimize_nsga(req: NSGARequest) -> NSGAResponse:
+    """Multi-objective NSGA-II. Returns the Pareto front across compactness,
+    reach margin, and throughput feasibility — the 3 sub-scores that trade
+    off most. Hard-violation candidates are kept inside the search to give
+    selection a gradient out of infeasibility, but filtered from the
+    response so the front is feasibility-clean.
+    """
+    robot_specs = _resolve_robot_specs(req)
+    optimizer = NSGAIIOptimizer(
+        population_size=req.population_size,
+        n_generations=req.n_generations,
+        seed=req.seed,
+    )
+    # Population × generations is CPU-bound; push to a worker thread.
+    result = await asyncio.to_thread(
+        optimizer.optimize, req.proposal, req.spec, robot_specs,
+    )
+    return NSGAResponse(
+        pareto_proposals=result.pareto_proposals,
+        pareto_scores=result.pareto_scores,
+        seed_proposal=result.seed_proposal,
+        seed_score=result.seed_score,
+        objectives=["1 - compactness", "1 - reach_margin", "1 - throughput_feasibility"],
+        n_evaluations=result.stats.n_evaluations,
+        n_generations=result.stats.n_generations,
+        n_pareto=result.stats.n_pareto,
+        n_feasible=result.stats.n_feasible,
+        walltime_s=result.stats.walltime_s,
+        history=result.stats.history,
     )
