@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/export", tags=["export"])
 
 
-ExportFormat = Literal["dxf", "stl", "step", "bom_csv", "bom_md"]
+ExportFormat = Literal["dxf", "dwg", "stl", "step", "bom_csv", "bom_md"]
 
 
 class ExportRequest(BaseModel):

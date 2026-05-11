@@ -147,7 +147,7 @@ export const api = {
 
   exportProposal: async (
     proposal: LayoutProposal,
-    format: 'dxf' | 'stl' | 'step' | 'bom_csv' | 'bom_md',
+    format: 'dxf' | 'dwg' | 'stl' | 'step' | 'bom_csv' | 'bom_md',
     signal?: AbortSignal,
   ): Promise<{ blob: Blob; filename: string }> => {
     const resp = await fetch(`${BASE_URL}/export`, {

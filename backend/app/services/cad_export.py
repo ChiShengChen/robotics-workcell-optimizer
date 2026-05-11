@@ -25,6 +25,7 @@ if str(_CAD_FLOW) not in sys.path:
 
 from export_cad import (  # noqa: E402  (path injection above)
     write_dxf as _write_dxf,
+    write_dwg as _write_dwg,
     write_stl as _write_stl,
     write_step as _write_step,
     load_robot,
@@ -36,10 +37,11 @@ from bom import (  # noqa: E402
 )
 
 
-ExportFormat = Literal["dxf", "stl", "step", "bom_csv", "bom_md"]
+ExportFormat = Literal["dxf", "dwg", "stl", "step", "bom_csv", "bom_md"]
 
 CONTENT_TYPES: dict[str, str] = {
     "dxf": "application/dxf",
+    "dwg": "application/acad",
     "stl": "model/stl",
     "step": "application/step",
     "bom_csv": "text/csv",
@@ -48,6 +50,7 @@ CONTENT_TYPES: dict[str, str] = {
 
 EXTENSIONS: dict[str, str] = {
     "dxf": "dxf",
+    "dwg": "dwg",
     "stl": "stl",
     "step": "step",
     "bom_csv": "csv",
@@ -173,6 +176,8 @@ def render(proposal: dict, fmt: ExportFormat) -> tuple[bytes, str, str]:
         out = Path(td) / base
         if fmt == "dxf":
             _write_dxf(cfg, robot, out)
+        elif fmt == "dwg":
+            _write_dwg(cfg, robot, out)
         elif fmt == "stl":
             _write_stl(cfg, robot, out)
         elif fmt == "step":

@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import ezdxf
@@ -446,6 +449,115 @@ def write_step(cfg: dict, robot: dict | None, out_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 2D DWG (AutoCAD binary) — via LibreDWG's dxf2dwg CLI
+# ---------------------------------------------------------------------------
+#
+# DWG is Autodesk-proprietary. There is no pip-installable native writer in
+# Python. We use LibreDWG's `dxf2dwg` as a subprocess: write our DXF first,
+# then convert. ezdxf is the source of truth — anything you see in DWG was
+# written via write_dxf() one second earlier.
+#
+# Install dxf2dwg (CLI binary from LibreDWG, GPLv3):
+#   - macOS (source): https://github.com/LibreDWG/libredwg → ./configure && make
+#   - Linux:          apt install libredwg-tools  (Debian/Ubuntu)
+#   - Alt path:       ODA File Converter (https://www.opendesign.com),
+#                     drop ODAFileConverter binary onto PATH and we'll find it.
+
+
+def write_dwg(cfg: dict, robot: dict | None, out_path: Path) -> None:
+    """Write DWG by routing DXF through LibreDWG's dxf2dwg CLI.
+
+    Raises RuntimeError with install hint if no converter is on PATH.
+    """
+    converter = _find_dwg_converter()
+    if converter is None:
+        raise RuntimeError(
+            "DWG export requires a DXF→DWG converter on PATH. Install one of:\n"
+            "  - LibreDWG (open source): https://github.com/LibreDWG/libredwg\n"
+            "  - ODA File Converter (free, registration required): "
+            "https://www.opendesign.com/guestfiles/oda_file_converter\n"
+            "Then add the binary to PATH and re-export."
+        )
+
+    # Write DXF to a tempfile, then convert in-place to DWG.
+    with tempfile.TemporaryDirectory() as td:
+        dxf_path = Path(td) / "scene.dxf"
+        write_dxf(cfg, robot, dxf_path)
+        name, kind = converter
+        if kind == "libredwg":
+            # dxf2dwg [-o outfile] [--as rNNNN] DXFFILE
+            # -y not a flag here — dxf2dwg refuses to overwrite. Tempfile
+            # path is fresh so it's a non-issue; we control out_path too.
+            if out_path.exists():
+                out_path.unlink()
+            res = subprocess.run(
+                [name, "-o", str(out_path), "--as", "r2000", str(dxf_path)],
+                capture_output=True, text=True, check=False,
+            )
+        else:
+            # ODA File Converter expects directory-level conversion:
+            # ODAFileConverter <inDir> <outDir> <ver> <type> <recurse> <audit> [filter]
+            res = subprocess.run(
+                [
+                    name, str(dxf_path.parent), str(out_path.parent),
+                    "ACAD2018", "DWG", "0", "1", "*.dxf",
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            produced = out_path.parent / "scene.dwg"
+            if produced.exists() and produced != out_path:
+                produced.rename(out_path)
+
+        if res.returncode != 0 or not out_path.exists():
+            raise RuntimeError(
+                f"DWG conversion failed ({name}). stderr:\n{res.stderr or res.stdout}"
+            )
+
+
+def _find_dwg_converter() -> tuple[str, str] | None:
+    """Locate a DXF→DWG converter binary. Returns (path, kind) or None.
+
+    kind is 'libredwg' for dxf2dwg-style CLI or 'oda' for ODA File Converter.
+    Prefer LibreDWG since its CLI is per-file (cleaner) than ODA's per-dir.
+
+    Searches PATH plus a few common user-local install dirs (`~/.local/bin`
+    in particular — `make install prefix=$HOME/.local` for source builds).
+    """
+    # Extra dirs that often aren't on the uvicorn process's PATH.
+    extra_dirs = [
+        Path.home() / ".local" / "bin",
+        Path("/opt/homebrew/bin"),
+        Path("/usr/local/bin"),
+    ]
+
+    def look(binary: str) -> str | None:
+        p = shutil.which(binary)
+        if p:
+            return p
+        for d in extra_dirs:
+            cand = d / binary
+            if cand.exists() and cand.is_file():
+                return str(cand)
+        return None
+
+    for name in ("dxf2dwg",):
+        p = look(name)
+        if p:
+            return p, "libredwg"
+    for name in ("ODAFileConverter", "OdaFileConverter"):
+        p = look(name)
+        if p:
+            return p, "oda"
+    # macOS app bundle fallback for ODA
+    for app in (
+        "/Applications/ODAFileConverter.app/Contents/MacOS/ODAFileConverter",
+    ):
+        if Path(app).exists():
+            return app, "oda"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -454,6 +566,7 @@ def main(argv: list[str]) -> int:
     args = [a for a in argv[1:] if not a.startswith("--")]
     flags = {a for a in argv[1:] if a.startswith("--")}
     want_step = "--step" in flags
+    want_dwg = "--dwg" in flags
     skip_stl = "--no-stl" in flags
     skip_dxf = "--no-dxf" in flags
 
@@ -484,6 +597,13 @@ def main(argv: list[str]) -> int:
         step_out = CAD_FLOW / f"{stem}.step"
         write_step(cfg, robot, step_out)
         print(f"wrote {step_out.relative_to(CAD_FLOW.parent)}")
+    if want_dwg:
+        dwg_out = CAD_FLOW / f"{stem}.dwg"
+        try:
+            write_dwg(cfg, robot, dwg_out)
+            print(f"wrote {dwg_out.relative_to(CAD_FLOW.parent)}")
+        except RuntimeError as e:
+            print(f"warn: DWG export skipped — {e}", file=sys.stderr)
     return 0
 
 

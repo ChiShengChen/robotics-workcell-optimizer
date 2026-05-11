@@ -18,10 +18,11 @@ import {
 } from '@/components/ui/dialog'
 import { useLayoutStore } from '@/store/layoutStore'
 
-type Fmt = 'dxf' | 'stl' | 'step' | 'bom_csv' | 'bom_md'
+type Fmt = 'dxf' | 'dwg' | 'stl' | 'step' | 'bom_csv' | 'bom_md'
 
 const FORMATS: { fmt: Fmt; label: string; sub: string; icon: typeof FileBox }[] = [
   { fmt: 'dxf', label: 'DXF (2D top-down)', sub: 'AutoCAD plan view, layered', icon: FileText },
+  { fmt: 'dwg', label: 'DWG (AutoCAD binary)', sub: 'Same plan as DXF, via LibreDWG', icon: FileText },
   { fmt: 'stl', label: 'STL (3D mesh)', sub: 'For Blender / 3D viewers', icon: FileBox },
   { fmt: 'step', label: 'STEP (3D BREP)', sub: 'SolidWorks / Fusion / FreeCAD', icon: FileBox },
   { fmt: 'bom_csv', label: 'BOM CSV', sub: 'Excel / Numbers, line items', icon: FileSpreadsheet },
@@ -117,8 +118,10 @@ export function ExportMenu() {
         )}
 
         <div className="text-[10px] text-slate-500">
-          STEP requires <code className="rounded bg-slate-100 px-1">cadquery</code> on
-          the backend. DXF/STL/BOM have no extra dependencies.
+          STEP requires <code className="rounded bg-slate-100 px-1">cadquery</code>;
+          DWG requires <code className="rounded bg-slate-100 px-1">dxf2dwg</code> (LibreDWG)
+          or <code className="rounded bg-slate-100 px-1">ODAFileConverter</code> on the
+          backend's PATH. DXF / STL / BOM have no extra deps.
         </div>
       </DialogContent>
     </Dialog>
