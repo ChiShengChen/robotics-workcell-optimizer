@@ -1,0 +1,185 @@
+"""Layout proposal + scoring schemas.
+
+PlacedComponent uses a flexible `dims` dict so we can encode per-type geometry
+(pallet length/width, fence polyline, conveyor length etc.) without exploding
+into a separate concrete class for every variant.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+PlacedType = Literal[
+    "robot", "conveyor", "pallet", "fence", "operator_zone"
+]
+
+
+class PlacedComponent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(description="Stable identifier (matches WorkcellSpec component id).")
+    type: PlacedType = Field(description="Component type discriminator.")
+    x_mm: float = Field(description="X position of component anchor in mm (cell origin LL).")
+    y_mm: float = Field(description="Y position of component anchor in mm.")
+    yaw_deg: float = Field(default=0.0, description="Yaw rotation in degrees (counter-clockwise).")
+    dims: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Per-type geometry: e.g. pallet {length_mm, width_mm}, fence {polyline: [[x,y],...]}, "
+            "conveyor {length_mm, width_mm}, robot {base_radius_mm, reach_mm}."
+        ),
+    )
+
+
+class CostBreakdown(BaseModel):
+    """Itemised BOM + ROI estimate for a layout. Numbers are order-of-
+    magnitude estimates intended for proposal-vs-proposal comparison, not
+    for procurement quotes — a real quote needs vendor RFQs + integrator
+    site visit + safety audit. The integration multiplier (1.6× bare-arm)
+    reflects typical industry markup for installation, EOAT, vision,
+    safety scanners, and commissioning.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    robots_usd: float = Field(description="Bare-arm catalogue midpoint, summed across arms.", ge=0)
+    eoat_usd: float = Field(description="End-of-arm tooling: ~$8k/arm typical.", ge=0)
+    conveyors_usd: float = Field(description="Conveyor sections: ~$4k/m + $3k controls each.", ge=0)
+    fence_usd: float = Field(description="Safety fence: $120/m perimeter + $4k light curtain.", ge=0)
+    cell_controller_usd: float = Field(description="PLC + cell controller + HMI: ~$20k flat.", ge=0)
+    bare_total_usd: float = Field(description="Sum of all hardware line items above.", ge=0)
+    integration_multiplier: float = Field(
+        description="1.6× = installation, integration, commissioning, training markup.", ge=1.0,
+    )
+    integration_usd: float = Field(description="bare_total × (multiplier − 1).", ge=0)
+    grand_total_usd: float = Field(description="bare_total + integration.", ge=0)
+    annual_labor_savings_usd: float = Field(
+        description=(
+            "Estimated yearly savings vs manual palletizing: assumes "
+            "$50k/year per displaced manual palletizer × n_robots."
+        ),
+        ge=0,
+    )
+    payback_months: float = Field(
+        description="grand_total / (annual_savings / 12). 0 if no savings.", ge=0,
+    )
+    line_items: list[dict[str, str | float]] = Field(
+        default_factory=list,
+        description="Per-line table: [{label, qty, unit_usd, subtotal_usd}, ...] for the UI.",
+    )
+
+
+class LayoutProposal(BaseModel):
+    """One candidate layout. Aggregates components + cycle/UPH estimates."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    proposal_id: str = Field(description="Unique id for this proposal.")
+    template: Literal[
+        "in_line", "L_shape", "U_shape", "dual_pallet",
+        "dual_arm_dual_pallet", "triple_arm_tandem", "quad_arm_dual_line",
+    ] = Field(description="Topology template used to seed this proposal.")
+    robot_model_id: str | None = Field(
+        description="Primary robot's RobotSpec.model; null if no feasible robot was found."
+    )
+    robot_model_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "All robots' models in the order their PlacedComponents appear. "
+            "Single-arm layouts have len==1; dual-arm have len==2. "
+            "robot_model_id mirrors robot_model_ids[0] for backward compat."
+        ),
+    )
+    task_assignment: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Maps robot.id -> list of pallet.id this robot serves. Empty dict "
+            "means default single-arm: the only robot serves every pallet. "
+            "Used by scoring to compute per-robot reach + cycle."
+        ),
+    )
+    components: list[PlacedComponent] = Field(
+        description="All placed components (robot(s), conveyor, pallets, fence, operator zone)."
+    )
+    cell_bounds_mm: tuple[float, float] = Field(
+        description="(W, H) of the workcell envelope used."
+    )
+    estimated_cycle_time_s: float = Field(
+        description="Estimated single-cycle time in seconds (per-robot average).", ge=0
+    )
+    estimated_uph: float = Field(
+        description="Estimated SYSTEM units per hour (sum across robots for multi-arm).", ge=0
+    )
+    rationale: str = Field(description="Short explanation of why this template was chosen.")
+    assumptions: list[str] = Field(
+        default_factory=list,
+        description="Layout-level assumptions (e.g. 'budget relaxed by $25k to find a feasible arm').",
+    )
+    estimated_cost_usd: float = Field(
+        default=0.0,
+        description=(
+            "Total bare-arm BOM = sum of midpoint catalogue price across "
+            "all arms. Real cell cost is ~1.5–2× this once integration / "
+            "EOAT / vision / safety fence are added — but the bare-arm "
+            "ratio is what makes proposals comparable. Used as the third "
+            "axis (bubble size) in the Pareto explorer."
+        ),
+        ge=0,
+    )
+    cost_breakdown: CostBreakdown | None = Field(
+        default=None,
+        description="Itemised BOM + ROI for the proposal-cost dialog.",
+    )
+
+
+class Violation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal[
+        "unreachable",
+        "overlap",
+        "fence_clearance",
+        "operator_zone_intrusion",
+        "iso13855",
+        "outside_envelope",
+        "obstacle_intrusion",
+    ] = Field(description="Violation category.")
+    severity: Literal["hard", "soft"] = Field(description="Hard violations zero the aggregate.")
+    component_ids: list[str] = Field(description="Components implicated.")
+    message: str = Field(description="Human-readable explanation.")
+    margin_mm: float | None = Field(
+        default=None,
+        description="Signed slack in mm: negative = how far violated, positive = remaining margin.",
+    )
+
+
+class ScoreBreakdown(BaseModel):
+    """Five sub-scores in [0,1] (higher is better) plus aggregate and violations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    compactness: float = Field(description="Bounding-box utilization score 0-1.", ge=0, le=1)
+    reach_margin: float = Field(description="Reach-feasibility score 0-1.", ge=0, le=1)
+    cycle_efficiency: float = Field(description="Cycle-time score 0-1.", ge=0, le=1)
+    safety_clearance: float = Field(description="ISO 13855 safety score 0-1.", ge=0, le=1)
+    throughput_feasibility: float = Field(
+        description="UPH_estimated / UPH_target saturated at 1.1 → score 0-1.", ge=0, le=1
+    )
+    aggregate: float = Field(
+        description="Weighted aggregate; 0 if any hard violation present.", ge=0, le=1
+    )
+    violations: list[Violation] = Field(default_factory=list, description="All violations found.")
+    weights: dict[str, float] = Field(
+        default_factory=dict, description="Weights used for aggregation (for transparency)."
+    )
+    per_robot_utilization: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Maps robot.id -> utilization ratio in [0, ∞). "
+            "Computed as (target_uph / n_robots) / cycles_per_hour_std. "
+            "0.0–1.0 = robot has spare headroom; > 1.0 = robot is the "
+            "bottleneck and can't sustain its share. UI renders as bar gauge."
+        ),
+    )

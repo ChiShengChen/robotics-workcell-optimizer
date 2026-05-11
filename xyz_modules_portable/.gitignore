@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# CAD/BOM artefacts produced by running examples or tests
+examples/*.dxf
+examples/*.dwg
+examples/*.stl
+examples/*.step
+examples/*_bom.csv
+examples/*_bom.md
