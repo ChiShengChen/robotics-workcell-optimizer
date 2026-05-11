@@ -131,8 +131,16 @@ def m(v: float) -> float:
 # ---------------------------------------------------------------------------
 
 
-def build_bom(cfg: dict) -> BomReport:
+def build_bom(cfg: dict, n_arms: int = 1) -> BomReport:
+    """Build a Bill of Materials for the cell described by `cfg`.
+
+    `n_arms` scales the items that are inherently per-robot (arm + integration +
+    pedestal + EOAT + controller cabinet). Per-cell items (fence, pallet, gates,
+    safety PLC, e-stop, floor marking) stay at qty 1 — adding a second arm in
+    the same cell doesn't double the perimeter fence or the safety PLC.
+    """
     rep = BomReport()
+    n_arms = max(1, int(n_arms))
 
     # ---- Robot ----
     robot_id = cfg.get("robot_id", "UNKNOWN_ROBOT")
@@ -145,7 +153,7 @@ def build_bom(cfg: dict) -> BomReport:
             part_no=f"ROBOT-{robot.get('manufacturer','')}-{robot.get('model','').replace(' ','_')}",
             category="Robot",
             description=f"{robot.get('manufacturer')} {robot.get('model')} — {robot.get('axes')}-axis, {robot.get('payload_kg')} kg payload, {robot.get('reach_mm')} mm reach",
-            qty=1,
+            qty=n_arms,
             unit_mass_kg=mass,
             unit_price_low_usd=low,
             unit_price_high_usd=high,
@@ -158,7 +166,7 @@ def build_bom(cfg: dict) -> BomReport:
             part_no=f"INT-{robot.get('model','').replace(' ','_')}",
             category="Integration",
             description=f"Robot integration labour & engineering ({int(INTEGRATION_FACTOR*100)}% of bare-arm midpoint)",
-            qty=1,
+            qty=n_arms,
             unit_mass_kg=None,
             unit_price_low_usd=mid * INTEGRATION_FACTOR * 0.8,
             unit_price_high_usd=mid * INTEGRATION_FACTOR * 1.2,
@@ -173,21 +181,21 @@ def build_bom(cfg: dict) -> BomReport:
             part_no=f"ROBOT-{robot_id}",
             category="Robot",
             description=f"{robot_id} (specs unknown)",
-            qty=1,
+            qty=n_arms,
             unit_mass_kg=800.0,
             unit_price_low_usd=50000.0,
             unit_price_high_usd=80000.0,
             source="placeholder",
         ))
 
-    # ---- Pedestal ----
+    # ---- Pedestal (one per arm) ----
     ped_h_mm = m(float(cfg.get("pedestal_height_m", 0.0)))
     if ped_h_mm > 1.0:
         rep.lines.append(BomLine(
             part_no="PED-STEEL-01",
             category="Structural",
             description=f"Steel pedestal, {int(ped_h_mm)} mm tall, ⌀ matching robot footprint",
-            qty=1,
+            qty=n_arms,
             unit_mass_kg=max(40.0, 0.12 * ped_h_mm),    # ~120 g per mm of height
             unit_price_low_usd=600.0,
             unit_price_high_usd=1400.0,
@@ -252,7 +260,7 @@ def build_bom(cfg: dict) -> BomReport:
             notes="Consumable, shown for cycle/load planning only.",
         ))
 
-    # ---- EOAT (gripper) ----
+    # ---- EOAT (gripper, one per arm) ----
     grip = cfg.get("gripper", {})
     if grip:
         p_low, p_high = PRICE_OVERRIDES["gripper_vacuum_basic"]
@@ -260,7 +268,7 @@ def build_bom(cfg: dict) -> BomReport:
             part_no="EOAT-VAC-01",
             category="EOAT",
             description=f"Vacuum gripper, collision envelope {grip.get('collision_size_m','?')}",
-            qty=1,
+            qty=n_arms,
             unit_mass_kg=MASS_RULES["gripper_vacuum_basic_kg"],
             unit_price_low_usd=p_low,
             unit_price_high_usd=p_high,
@@ -319,13 +327,13 @@ def build_bom(cfg: dict) -> BomReport:
         notes="Use ISO 13855 separation: S = K·T + C, K = 2000 mm/s.",
     ))
 
-    # ---- Controls ----
+    # ---- Controls (controller per arm; PLC + e-stop shared) ----
     p_low, p_high = PRICE_OVERRIDES["controller"]
     rep.lines.append(BomLine(
         part_no="CTRL-ROBOT",
         category="Controls",
         description="Robot controller + power cabinet",
-        qty=1,
+        qty=n_arms,
         unit_mass_kg=MASS_RULES["controller_kg"],
         unit_price_low_usd=p_low,
         unit_price_high_usd=p_high,

@@ -172,6 +172,8 @@ def render(proposal: dict, fmt: ExportFormat) -> tuple[bytes, str, str]:
     proposal_id = proposal.get("proposal_id", "layout")
     base = f"{proposal_id}.{EXTENSIONS[fmt]}"
 
+    n_arms = max(1, len(proposal.get("robot_model_ids") or []))
+
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / base
         if fmt == "dxf":
@@ -183,10 +185,10 @@ def render(proposal: dict, fmt: ExportFormat) -> tuple[bytes, str, str]:
         elif fmt == "step":
             _write_step(cfg, robot, out)
         elif fmt == "bom_csv":
-            rep = build_bom(cfg)
+            rep = build_bom(cfg, n_arms=n_arms)
             _bom_csv(rep, out)
         elif fmt == "bom_md":
-            rep = build_bom(cfg)
+            rep = build_bom(cfg, n_arms=n_arms)
             # bom.write_markdown signature: (rep, cfg, cfg_path, out_path).
             # cfg_path is only used for header text + relative_to display;
             # synthesise a stable virtual path.
@@ -202,3 +204,111 @@ def stream(proposal: dict, fmt: ExportFormat) -> tuple[io.BytesIO, str, str]:
     """Same as `render` but returns a BytesIO ready for FastAPI StreamingResponse."""
     data, ct, name = render(proposal, fmt)
     return io.BytesIO(data), ct, name
+
+
+# ---------------------------------------------------------------------------
+# CostBreakdown (in-canvas BomDialog) — built from the same cad_flow rules
+# so the table in BomDialog matches the BOM CSV/MD downloads line-for-line.
+# ---------------------------------------------------------------------------
+
+
+# Map each cad_flow BOM category onto a slot in the legacy CostBreakdown
+# named totals. Categories that have no slot (Product, Integration) are
+# excluded from the bare hardware total but kept in line_items for visibility.
+_CATEGORY_TO_TOTAL: dict[str, str] = {
+    "Robot": "robots_usd",
+    "EOAT": "eoat_usd",
+    "Conveyor": "conveyors_usd",
+    "Safety": "fence_usd",
+    "Structural": "fence_usd",       # pedestal lumped with cell-structural total
+    "Pallet": "fence_usd",           # pallet capex is small; folded into "other hardware"
+    "Controls": "cell_controller_usd",
+}
+
+
+def build_cost_breakdown(
+    components: list[dict],
+    robot_model_ids: list[str],
+    primary_robot_id: str | None,
+) -> dict:
+    """Build a CostBreakdown-shaped dict from placed components + arm robots.
+
+    Uses cad_flow.bom.build_bom() under the hood so the totals here match
+    what /api/export -> bom_csv / bom_md emit. Returns a dict (not a
+    Pydantic instance) so callers in either codebase can construct their
+    own typed object.
+
+    Conventions:
+      - `components`: list of PlacedComponent dicts (model_dump'd).
+      - `robot_model_ids`: in order; len() == number of arms.
+      - `primary_robot_id`: used by load_robot() to attach catalogue pricing;
+        usually == robot_model_ids[0].
+    """
+    n_arms = max(1, len(robot_model_ids))
+    fake_proposal = {
+        "components": components,
+        "robot_model_id": primary_robot_id or (robot_model_ids[0] if robot_model_ids else None),
+    }
+    cfg = proposal_to_trial_config(fake_proposal)
+    rep = build_bom(cfg, n_arms=n_arms)
+
+    # Aggregate to legacy named totals (use midpoint of low/high range).
+    totals = {
+        "robots_usd": 0.0,
+        "eoat_usd": 0.0,
+        "conveyors_usd": 0.0,
+        "fence_usd": 0.0,
+        "cell_controller_usd": 0.0,
+    }
+    integration_usd = 0.0
+    bare_total = 0.0
+    line_items: list[dict[str, str | float]] = []
+    for ln in rep.lines:
+        if ln.unit_price_low_usd is None or ln.unit_price_high_usd is None:
+            # Non-capex line (e.g. boxes — consumable). Keep visible but
+            # don't count toward totals.
+            line_items.append({
+                "label": f"{ln.category} · {ln.description}",
+                "qty": float(ln.qty),
+                "unit_usd": 0.0,
+                "subtotal_usd": 0.0,
+            })
+            continue
+        unit_mid = (ln.unit_price_low_usd + ln.unit_price_high_usd) / 2.0
+        subtotal = unit_mid * ln.qty
+        line_items.append({
+            "label": f"{ln.category} · {ln.description}",
+            "qty": float(ln.qty),
+            "unit_usd": float(unit_mid),
+            "subtotal_usd": float(subtotal),
+        })
+        if ln.category == "Integration":
+            integration_usd += subtotal
+            continue
+        bare_total += subtotal
+        slot = _CATEGORY_TO_TOTAL.get(ln.category)
+        if slot:
+            totals[slot] += subtotal
+
+    grand_total = bare_total + integration_usd
+    # Report an effective multiplier so the existing BomDialog field stays
+    # meaningful — for the cad_flow model integration scales per arm, not
+    # as a flat % of bare_total, but the ratio is still informative.
+    integration_multiplier = (grand_total / bare_total) if bare_total > 0 else 1.0
+
+    # ROI: 1 displaced manual palletizer per arm × $50k fully-loaded labour.
+    annual_savings = 50_000.0 * n_arms
+    payback_months = (
+        grand_total / (annual_savings / 12.0) if annual_savings > 0 else 0.0
+    )
+
+    return {
+        **totals,
+        "bare_total_usd": bare_total,
+        "integration_multiplier": integration_multiplier,
+        "integration_usd": integration_usd,
+        "grand_total_usd": grand_total,
+        "annual_labor_savings_usd": annual_savings,
+        "payback_months": payback_months,
+        "line_items": line_items,
+    }
