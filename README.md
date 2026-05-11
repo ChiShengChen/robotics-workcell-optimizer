@@ -1227,6 +1227,66 @@ git remote -v
 7. **Visualise** — 2D Konva canvas + 3D animated preview with live
    pick-and-place cycle
 
+## 18. CAD / BOM export (DXF · DWG · STL · STEP · BOM)
+
+**Files**: [`backend/app/api/export.py`](backend/app/api/export.py),
+[`backend/app/services/cad_export.py`](backend/app/services/cad_export.py),
+[`cad_flow/export_cad.py`](cad_flow/export_cad.py),
+[`cad_flow/bom.py`](cad_flow/bom.py),
+[`frontend/src/components/panels/ExportMenu.tsx`](frontend/src/components/panels/ExportMenu.tsx)
+
+`POST /api/export` renders the active `LayoutProposal` as one of six
+artefacts and streams it with a `Content-Disposition: attachment`
+header so the browser fires a native download. The same writers back
+the offline CLI in `cad_flow/` — one source of truth, two entry points.
+
+| Format     | Lib                | Notes                                              |
+|------------|--------------------|----------------------------------------------------|
+| **DXF**    | `ezdxf`            | 2D top-down, 9 layers (ROBOT/REACH/CONVEYOR/…)     |
+| **DWG**    | LibreDWG / ODA     | AutoCAD R2000 binary; routes DXF through `dxf2dwg` |
+| **STL**    | `trimesh`          | 3D mesh: boxes + cylinders + extruded fence walls  |
+| **STEP**   | `cadquery`         | 3D BREP solids, named per part — opens in SolidWorks/Fusion/FreeCAD |
+| **BOM CSV**| stdlib `csv`       | Robot + integration + conveyor + safety + controls; itemised pricing |
+| **BOM MD** | plain markdown     | Same data, with totals + assumptions block        |
+
+### 18a. DWG install (one-off, only if you need DWG export)
+
+DWG is Autodesk-proprietary so there's no pip-installable writer.
+`write_dwg()` looks for either `dxf2dwg` (LibreDWG) or
+`ODAFileConverter` on PATH (plus `~/.local/bin`, `/opt/homebrew/bin`,
+`/usr/local/bin`, and the macOS app bundle). If neither is found
+the endpoint returns **501 Not Implemented** with an install hint —
+DXF/STL/STEP/BOM keep working.
+
+**macOS (LibreDWG from source)** — no brew formula exists:
+
+```bash
+brew install autoconf automake libtool pkg-config
+curl -L https://ftp.gnu.org/gnu/libredwg/libredwg-0.13.3.tar.xz | tar xJ -C /tmp
+cd /tmp/libredwg-0.13.3
+./configure --prefix=$HOME/.local --disable-bindings --disable-python
+make -j8 && make install prefix=$HOME/.local
+# macOS only — relink the binary to the install-prefix dylib:
+install_name_tool -change /usr/local/lib/libredwg.0.dylib \
+  $HOME/.local/lib/libredwg.0.dylib $HOME/.local/bin/dxf2dwg
+install_name_tool -id $HOME/.local/lib/libredwg.0.dylib \
+  $HOME/.local/lib/libredwg.0.dylib
+```
+
+**Debian / Ubuntu**:
+
+```bash
+apt install libredwg-tools  # ships dxf2dwg + dwg2dxf
+```
+
+**Windows or "I refuse to build"**: grab
+[ODA File Converter](https://www.opendesign.com/guestfiles/oda_file_converter)
+(free, requires registration), drop `ODAFileConverter` onto PATH.
+
+After install, restart the backend so the subprocess picks up the new
+binary. The frontend's Export button shows DWG in the same menu — no
+extra setup.
+
 ## Schema (excerpt)
 
 ```python
