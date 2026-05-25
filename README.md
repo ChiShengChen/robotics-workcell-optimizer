@@ -6,9 +6,12 @@ End-to-end pipeline: **natural language → structured spec → robot selection
 
 ### Demo
 
+![demo](docs/demo.gif)
+
+Full-quality MP4 (2 min 13 s, 1.8 MB):
 <video src="https://github.com/ChiShengChen/robotics-workcell-optimizer/raw/main/docs/demo.mp4" controls muted width="720"></video>
 
-If the inline video doesn't render in your viewer, [▶ download / open `docs/demo.mp4`](docs/demo.mp4) (1.8 MB, 2 min 13 s).
+If neither renders in your viewer, open [`docs/demo.gif`](docs/demo.gif) (2.2 MB, first 45 s) or [`docs/demo.mp4`](docs/demo.mp4) directly.
 
 > 🌐 **Live demo**: <https://robotics-workcell-demo.vercel.app>
 > ⚙️ **Backend API docs**: <https://xyz-robotics-backend.onrender.com/docs>
