@@ -4,6 +4,12 @@ End-to-end pipeline: **natural language → structured spec → robot selection
 → optimized 2D layout → interactive editing → re-optimization (SA + CP-SAT)
 → 3D animated preview**.
 
+### Demo
+
+<video src="https://github.com/ChiShengChen/robotics-workcell-optimizer/raw/main/docs/demo.mp4" controls muted width="720"></video>
+
+If the inline video doesn't render in your viewer, [▶ download / open `docs/demo.mp4`](docs/demo.mp4) (1.8 MB, 2 min 13 s).
+
 > 🌐 **Live demo**: <https://robotics-workcell-demo.vercel.app>
 > ⚙️ **Backend API docs**: <https://xyz-robotics-backend.onrender.com/docs>
 > 📦 **Source**: <https://github.com/ChiShengChen/robotics-workcell-optimizer>
